@@ -21,6 +21,9 @@ user_karma_systems = defaultdict(
     lambda: KarmaSystem(max_vitality=100.0, base_cost=5.0, penalty_factor=20.0)
 )
 
+# 存储每个IP的请求记录（用于API限流）
+request_records = defaultdict(list)
+
 
 def get_client_ip(req: Request) -> str:
     """
@@ -40,6 +43,49 @@ def get_client_ip(req: Request) -> str:
     
     # 否则使用直接连接的IP
     return req.client.host if req.client else "unknown"
+
+
+def check_rate_limit(
+    client_ip: str, 
+    max_requests: int = 10, 
+    window_seconds: int = 60
+) -> tuple[bool, dict]:
+    """
+    检查是否超过限流
+    防止单个用户占用过多资源，影响其他用户
+    
+    :param client_ip: 客户端IP地址
+    :param max_requests: 时间窗口内最大请求数
+    :param window_seconds: 时间窗口（秒）
+    :return: (是否允许, 限流信息)
+    """
+    current_time = time.time()
+    
+    # 清理过期记录（超过时间窗口的请求）
+    request_records[client_ip] = [
+        req_time for req_time in request_records[client_ip]
+        if current_time - req_time < window_seconds
+    ]
+    
+    # 检查是否超过限制
+    if len(request_records[client_ip]) >= max_requests:
+        # 计算需要等待的时间
+        if request_records[client_ip]:
+            oldest_request = min(request_records[client_ip])
+            retry_after = int(window_seconds - (current_time - oldest_request)) + 1
+        else:
+            retry_after = window_seconds
+        
+        return False, {
+            "max_requests": max_requests,
+            "window_seconds": window_seconds,
+            "current_requests": len(request_records[client_ip]),
+            "retry_after": retry_after
+        }
+    
+    # 记录本次请求
+    request_records[client_ip].append(current_time)
+    return True, {}
 
 
 class SingleLineResponse(BaseModel):
@@ -100,6 +146,19 @@ async def generate_single_line(req: Request):
     try:
         # 获取用户IP并获取该用户的元气系统
         client_ip = get_client_ip(req)
+        
+        # 检查API限流（生成单个爻接口：每分钟最多30次请求）
+        allowed, limit_info = check_rate_limit(client_ip, max_requests=30, window_seconds=60)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "请求过于频繁",
+                    "message": f"请稍后再试，每分钟最多30次请求。请在 {limit_info['retry_after']} 秒后重试。",
+                    "limit_info": limit_info
+                }
+            )
+        
         karma_system = user_karma_systems[client_ip]
         
         # 直接生成爻，不消耗元气
@@ -174,6 +233,20 @@ async def interpret_divination(request: DivinationRequest, req: Request):
     try:
         # 获取用户IP并获取该用户的元气系统
         client_ip = get_client_ip(req)
+        
+        # 检查API限流（防止单个用户占用过多资源）
+        # 占卜解读接口：每分钟最多10次请求
+        allowed, limit_info = check_rate_limit(client_ip, max_requests=10, window_seconds=60)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,  # Too Many Requests
+                detail={
+                    "error": "请求过于频繁",
+                    "message": f"请稍后再试，每分钟最多10次请求。请在 {limit_info['retry_after']} 秒后重试。",
+                    "limit_info": limit_info
+                }
+            )
+        
         karma_system = user_karma_systems[client_ip]
         
         # 更新元气值（考虑衰减和恢复）
@@ -370,6 +443,19 @@ async def recharge_karma(req: Request):
     """
     # 获取用户IP并获取该用户的元气系统
     client_ip = get_client_ip(req)
+    
+    # 检查API限流（充能接口：每分钟最多5次请求，防止滥用）
+    allowed, limit_info = check_rate_limit(client_ip, max_requests=5, window_seconds=60)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "请求过于频繁",
+                "message": f"请稍后再试，每分钟最多5次充能。请在 {limit_info['retry_after']} 秒后重试。",
+                "limit_info": limit_info
+            }
+        )
+    
     karma_system = user_karma_systems[client_ip]
     
     # 模拟付费成功，恢复元气到满值
