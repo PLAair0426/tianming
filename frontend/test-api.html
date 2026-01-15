@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API测试页面</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background: #000;
+            color: #06b6d4;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .test-section {
+            background: rgba(6, 182, 212, 0.1);
+            border: 1px solid #06b6d4;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        button {
+            background: #06b6d4;
+            color: #000;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px;
+            border-radius: 3px;
+        }
+        button:hover {
+            background: #22d3ee;
+        }
+        .result {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            margin-top: 10px;
+            border-left: 3px solid #06b6d4;
+            white-space: pre-wrap;
+            font-size: 12px;
+        }
+        .success {
+            border-left-color: #22c55e;
+            color: #22c55e;
+        }
+        .error {
+            border-left-color: #ef4444;
+            color: #ef4444;
+        }
+        h1 {
+            text-align: center;
+            text-shadow: 0 0 10px #06b6d4;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔮 后端API测试页面</h1>
+    
+    <div class="test-section">
+        <h2>1. 健康检查</h2>
+        <button onclick="testHealth()">测试 /health</button>
+        <div id="health-result" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>2. 生成单个爻</h2>
+        <button onclick="testGenerateLine()">测试 /api/divination/generate-line</button>
+        <div id="generate-result" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>3. CORS测试</h2>
+        <button onclick="testCORS()">测试CORS配置</button>
+        <div id="cors-result" class="result"></div>
+    </div>
+    
+    <div class="test-section">
+        <h2>4. 完整流程测试</h2>
+        <button onclick="testFullFlow()">测试完整流程（生成6个爻）</button>
+        <div id="full-result" class="result"></div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8000';
+        
+        function log(elementId, message, isError = false) {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.className = 'result ' + (isError ? 'error' : 'success');
+        }
+        
+        async function testHealth() {
+            try {
+                log('health-result', '正在测试...', false);
+                const response = await fetch(`${API_BASE_URL}/health`);
+                const data = await response.json();
+                log('health-result', 
+                    `✅ 成功！\n状态码: ${response.status}\n响应: ${JSON.stringify(data, null, 2)}`, 
+                    false
+                );
+            } catch (error) {
+                log('health-result', 
+                    `❌ 失败！\n错误: ${error.message}\n\n可能的原因：\n1. 后端服务未启动\n2. 端口8000被占用\n3. 防火墙阻止连接`, 
+                    true
+                );
+            }
+        }
+        
+        async function testGenerateLine() {
+            try {
+                log('generate-result', '正在测试...', false);
+                const response = await fetch(`${API_BASE_URL}/api/divination/generate-line`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                log('generate-result', 
+                    `✅ 成功！\n状态码: ${response.status}\n响应: ${JSON.stringify(data, null, 2)}\n\n值: ${data.value} (${data.name})\n二进制: ${data.binary}`, 
+                    false
+                );
+            } catch (error) {
+                log('generate-result', 
+                    `❌ 失败！\n错误: ${error.message}\n\n可能的原因：\n1. 后端服务未启动\n2. CORS配置问题\n3. API路径错误\n4. 网络连接问题`, 
+                    true
+                );
+            }
+        }
+        
+        async function testCORS() {
+            try {
+                log('cors-result', '正在测试CORS...', false);
+                const response = await fetch(`${API_BASE_URL}/api/divination/generate-line`, {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Origin': window.location.origin,
+                    },
+                });
+                
+                const corsHeader = response.headers.get('Access-Control-Allow-Origin');
+                log('cors-result', 
+                    `CORS配置检查：\nAccess-Control-Allow-Origin: ${corsHeader || '未设置'}\n\n${corsHeader ? '✅ CORS配置正常' : '❌ CORS配置可能有问题'}`, 
+                    !corsHeader
+                );
+            } catch (error) {
+                log('cors-result', 
+                    `❌ CORS测试失败\n错误: ${error.message}`, 
+                    true
+                );
+            }
+        }
+        
+        async function testFullFlow() {
+            try {
+                log('full-result', '正在测试完整流程（生成6个爻）...\n', false);
+                const lines = [];
+                const values = [];
+                
+                for (let i = 0; i < 6; i++) {
+                    const response = await fetch(`${API_BASE_URL}/api/divination/generate-line`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`第${i+1}个爻生成失败: HTTP ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    lines.push(data.binary);
+                    values.push(data.value);
+                    
+                    log('full-result', 
+                        `正在生成第 ${i+1}/6 个爻...\n值: ${data.value} (${data.name}), 二进制: ${data.binary}\n\n`, 
+                        false
+                    );
+                    
+                    // 等待100ms再生成下一个
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+                
+                log('full-result', 
+                    `✅ 完整流程测试成功！\n\n生成的6个爻：\n二进制: [${lines.join(', ')}]\n数值: [${values.join(', ')}]\n\n所有爻都已成功生成！`, 
+                    false
+                );
+            } catch (error) {
+                log('full-result', 
+                    `❌ 完整流程测试失败\n错误: ${error.message}`, 
+                    true
+                );
+            }
+        }
+        
+        // 页面加载时自动测试健康检查
+        window.addEventListener('load', () => {
+            testHealth();
+        });
+    </script>
+</body>
+</html>
