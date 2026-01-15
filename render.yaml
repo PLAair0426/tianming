@@ -2,12 +2,14 @@ services:
   - type: web
     name: celestial-divination-api
     env: python
+    # Python 版本（可选，Render 会自动检测）
+    # pythonVersion: 3.11
     buildCommand: cd backend && pip install -r requirements.txt
     startCommand: cd backend && uvicorn api_main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DEEPSEEK_API_KEY
-        sync: false
+        sync: false  # 需要手动在 Dashboard 设置
       - key: DEBUG_MODE
         value: False
       - key: FRONTEND_URL
-        sync: false
+        sync: false  # 需要手动在 Dashboard 设置（前端部署后更新）

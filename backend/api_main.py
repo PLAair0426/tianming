@@ -51,10 +51,20 @@ else:
     # 合并环境变量配置的前端URL和默认地址
     allowed_origins = list(set(default_origins + frontend_origins))
     
+    # 如果 FRONTEND_URL 未设置，临时允许所有来源（防止配置错误导致无法访问）
+    # 注意：这应该尽快通过环境变量配置正确的域名
+    if not frontend_origins:
+        print("⚠️ 警告: 生产环境未设置 FRONTEND_URL，临时允许所有来源访问")
+        print("⚠️ 请在 Render Dashboard 设置 FRONTEND_URL 环境变量")
+        allowed_origins = ["*"]
+        allow_creds = False
+    else:
+        allow_creds = True
+    
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
-        allow_credentials=True,
+        allow_credentials=allow_creds,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
         expose_headers=["*"],

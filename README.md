@@ -331,57 +331,250 @@ VITE_API_BASE_URL=http://localhost:8000
 
 ## 部署说明
 
-### 后端部署
+### 📋 部署方案
 
-#### 使用 Docker（推荐）
+推荐使用 **Cloudflare Pages（前端）+ Render（后端）** 的混合部署方案：
 
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-CMD ["uvicorn", "api_main:app", "--host", "0.0.0.0", "--port", "8000"]
+- ✅ **前端**：Cloudflare Pages（免费、全球 CDN、自动部署）
+- ✅ **后端**：Render（支持 Python/FastAPI、免费计划可用）
+
+---
+
+### 🚀 快速部署步骤
+
+#### 第一步：上传代码到 GitHub
+
+1. **初始化 Git 仓库**（如果还没有）
+   ```bash
+   git init
+   git add .
+   git commit -m "初始提交：天国神算项目"
+   ```
+
+2. **在 GitHub 创建仓库**
+   - 访问 [GitHub](https://github.com)
+   - 点击 **New repository**
+   - 填写仓库信息，**不要**勾选 "Initialize with README"
+   - 点击 **Create repository**
+
+3. **连接并推送代码**
+   ```bash
+   git remote add origin https://github.com/YOUR_USERNAME/REPO_NAME.git
+   git branch -M main
+   git push -u origin main
+   ```
+   > 如果提示认证失败，使用 Personal Access Token 作为密码
+
+---
+
+#### 第二步：部署后端到 Render
+
+1. **注册并登录 Render**
+   - 访问 [Render](https://render.com/)
+   - 使用 GitHub 账号登录
+
+2. **创建 Web Service**
+   - 点击 **New +** → **Web Service**
+   - 选择 **Connect GitHub**，授权并选择仓库
+   - 选择仓库和分支（通常是 `main`）
+
+3. **配置服务**
+   - **Name**: `celestial-divination-api`（或自定义）
+   - **Region**: 选择离你最近的区域
+   - **Environment**: `Python 3`
+   - **Build Command**: 
+     ```bash
+     cd backend && pip install -r requirements.txt
+     ```
+   - **Start Command**: 
+     ```bash
+     cd backend && uvicorn api_main:app --host 0.0.0.0 --port $PORT
+     ```
+
+4. **配置环境变量**
+   - `DEEPSEEK_API_KEY` = 你的 DeepSeek API Key（**必需**）
+   - `DEBUG_MODE` = `False`
+   - `FRONTEND_URL` = （先留空，等前端部署后再更新）
+
+5. **选择计划并部署**
+   - 选择 **Free Plan**（测试用）或 **Starter Plan**（$7/月，无冷启动）
+   - 点击 **Create Web Service**
+   - 等待部署完成（5-10 分钟）
+   - **复制后端 URL**（例如：`https://your-api.onrender.com`）
+
+6. **测试后端**
+   - 访问 `https://your-api.onrender.com/health`
+   - 应该返回 `{"status": "ok"}`
+
+---
+
+#### 第三步：部署前端到 Cloudflare Pages
+
+1. **登录 Cloudflare**
+   - 访问 [Cloudflare Dashboard](https://dash.cloudflare.com/)
+   - 登录你的账号
+
+2. **创建 Pages 项目**
+   - 点击左侧菜单 **Pages**
+   - 点击 **Create a project**
+   - 选择 **Connect to Git**
+   - 授权 Cloudflare 访问 GitHub
+   - 选择仓库和分支
+
+3. **配置构建设置**
+   - **Project name**: `celestial-divination`（或自定义）
+   - **Framework preset**: `React (Vite)`
+   - **Build command**: 
+     ```bash
+     cd frontend && npm install && npm run build
+     ```
+   - **Build output directory**: `frontend/dist`
+   - **Root directory**: 留空
+
+4. **配置环境变量**
+   - 展开 **Environment variables (Advanced)**
+   - 添加变量：
+     - Key: `VITE_API_BASE_URL`
+     - Value: `https://your-api.onrender.com`（使用第二步的后端 URL）
+
+5. **保存并部署**
+   - 点击 **Save and Deploy**
+   - 等待构建完成（2-5 分钟）
+   - **复制前端 URL**（例如：`https://your-app.pages.dev`）
+
+---
+
+#### 第四步：连接前后端
+
+1. **更新后端 CORS 配置**
+   - 回到 Render Dashboard
+   - 进入你的后端服务
+   - 点击 **Environment** 标签
+   - 更新 `FRONTEND_URL` 为你的前端 URL：
+     ```
+     https://your-app.pages.dev
+     ```
+   - 点击 **Save Changes**
+   - 等待自动重新部署（2-3 分钟）
+
+2. **测试连接**
+   - 访问前端网站
+   - 打开浏览器开发者工具（F12）
+   - 尝试使用占卜功能
+   - 检查 Network 标签，确认 API 请求成功
+
+---
+
+### ⚙️ 环境变量配置
+
+#### 前端（Cloudflare Pages）
+
+| 变量名 | 值 | 说明 |
+|--------|-----|------|
+| `VITE_API_BASE_URL` | `https://your-api.onrender.com` | **必需**，后端 API 地址 |
+
+⚠️ **重要**：前端**不应该**配置以下变量（这些是后端的）：
+- ❌ `DEBUG_MODE`
+- ❌ `DEEPSEEK_API_KEY`（敏感信息，不应暴露）
+- ❌ `FRONTEND_URL`
+
+#### 后端（Render）
+
+| 变量名 | 值 | 说明 |
+|--------|-----|------|
+| `DEEPSEEK_API_KEY` | `sk-...` | **必需**，DeepSeek API 密钥 |
+| `DEBUG_MODE` | `False` | 生产环境设为 False |
+| `FRONTEND_URL` | `https://your-app.pages.dev` | **必需**，前端域名（用于 CORS） |
+
+---
+
+### 🔧 常见部署问题
+
+#### 1. CORS 错误
+
+**错误信息**：
+```
+Access-Control-Allow-Origin header is not present
 ```
 
-```bash
-docker build -t divination-api .
-docker run -p 8000:8000 -e DEEPSEEK_API_KEY=your_key divination-api
-```
+**解决方案**：
+1. 检查 Render 的 `FRONTEND_URL` 环境变量是否正确
+2. 确保 `DEBUG_MODE` = `False`
+3. 确保 URL 格式正确（包含 `https://`，没有末尾斜杠）
+4. 等待 Render 重新部署完成
+5. 清除浏览器缓存后重试
 
-#### 使用生产级服务器
+#### 2. 构建失败
 
-```bash
-uvicorn api_main:app --host 0.0.0.0 --port 8000 --workers 4
-```
+**前端构建失败**：
+- 检查 Node.js 版本（Cloudflare Pages 支持 Node 18/20）
+- 查看构建日志中的具体错误
+- 确认 `frontend/dist` 目录路径正确
 
-#### 云服务部署
+**后端构建失败**：
+- 检查 `requirements.txt` 是否包含所有依赖
+- 查看 Render Logs 中的错误信息
+- 确认 Python 版本兼容
 
-- **Vercel**: 支持 Python，自动部署
-- **Railway**: 简单易用，自动部署
-- **AWS/GCP/Azure**: 企业级，功能强大
+#### 3. 服务休眠（Render Free Plan）
 
-### 前端部署
+**症状**：首次请求需要等待 30-60 秒
 
-#### 构建生产版本
+**原因**：Free Plan 的服务在 15 分钟无活动后会休眠
 
-```bash
-cd frontend
-npm run build
-```
+**解决方案**：
+- 等待冷启动完成（30-60 秒）
+- 或升级到 Starter Plan（$7/月），服务常驻
 
-#### 部署到 Vercel（推荐）
+#### 4. 环境变量不生效
 
-- 免费个人项目
-- 自动部署
-- 全球 CDN 加速
-- 自动 SSL 证书
+**前端环境变量**：
+- Vite 环境变量必须以 `VITE_` 开头
+- 环境变量在构建时注入，修改后需要重新构建
 
-#### 其他部署选项
+**后端环境变量**：
+- 修改后需要等待重新部署
+- 检查环境变量值是否正确（没有多余空格）
 
+---
+
+### ✅ 部署检查清单
+
+#### 后端（Render）
+- [ ] 服务已成功部署
+- [ ] `/health` 端点返回 `{"status": "ok"}`
+- [ ] 环境变量已配置：
+  - [ ] `DEEPSEEK_API_KEY`（必需）
+  - [ ] `DEBUG_MODE=False`
+  - [ ] `FRONTEND_URL`（前端 URL）
+
+#### 前端（Cloudflare Pages）
+- [ ] 项目已成功部署
+- [ ] 环境变量已配置：
+  - [ ] `VITE_API_BASE_URL`（后端 URL）
+- [ ] 网站可以正常访问
+
+#### 连接测试
+- [ ] 前端可以成功调用后端 API
+- [ ] 没有 CORS 错误
+- [ ] 占卜功能正常工作
+
+---
+
+### 📚 其他部署选项
+
+#### 后端部署选项
+
+- **Railway**: 简单易用，自动部署（参考 `backend/railway.json`）
+- **Fly.io**: 支持全球部署（参考 `backend/fly.toml`）
+- **Vercel**: 支持 Serverless Functions
+- **AWS/GCP/Azure**: 企业级部署
+
+#### 前端部署选项
+
+- **Vercel**: 免费、自动部署、全球 CDN
 - **Netlify**: 类似 Vercel
 - **GitHub Pages**: 免费静态托管
-- **Cloudflare Pages**: 免费 CDN 加速
 
 ---
 
