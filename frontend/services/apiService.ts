@@ -151,16 +151,39 @@ export const getDivination = async (
       
       // 如果是429错误，区分限流和元气不足
       if (response.status === 429 && errorData.detail) {
-        const detail = typeof errorData.detail === 'object' ? errorData.detail : {};
+        // 确保 detail 是对象
+        let detail: any = {};
+        if (typeof errorData.detail === 'string') {
+          try {
+            detail = JSON.parse(errorData.detail);
+          } catch {
+            detail = { message: errorData.detail };
+          }
+        } else if (typeof errorData.detail === 'object' && errorData.detail !== null) {
+          detail = errorData.detail;
+        }
+        
         const errorType = detail.error || '';
+        const hasLimitInfo = detail.limit_info !== undefined && detail.limit_info !== null;
+        
+        // 调试日志
+        console.log('🔍 429错误详情:', {
+          errorData,
+          detail,
+          errorType,
+          hasLimitInfo,
+          limitInfo: detail.limit_info
+        });
         
         // 判断是限流错误还是元气不足错误
-        if (errorType === '请求过于频繁' || detail.limit_info) {
+        // 优先检查 limit_info，因为这是限流错误的最明确标识
+        if (hasLimitInfo || errorType === '请求过于频繁') {
           // 限流错误
           const limitInfo = detail.limit_info || {};
           const errorMsg = `请求过于频繁\n\n` +
             `每分钟最多10次请求，请在 ${limitInfo.retry_after || 60} 秒后重试。\n\n` +
             `当前请求数：${limitInfo.current_requests || 0}/${limitInfo.max_requests || 10}`;
+          console.log('✅ 识别为限流错误:', errorMsg);
           throw new Error(errorMsg);
         } else {
           // 元气不足错误
@@ -168,6 +191,7 @@ export const getDivination = async (
             `当前元气：${detail.current_vitality || 0}%\n` +
             `需要消耗：${detail.required_cost || 0}%\n\n` +
             `请稍等片刻，让元气恢复后再试。`;
+          console.log('✅ 识别为元气不足错误:', errorMsg);
           throw new Error(errorMsg);
         }
       }
