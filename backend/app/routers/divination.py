@@ -11,6 +11,7 @@ from app.core.karma_system import KarmaSystem
 from app.services.ai_agent import YiMasterAgent
 import random
 import time
+import asyncio
 
 router = APIRouter()
 
@@ -323,8 +324,10 @@ async def interpret_divination(request: DivinationRequest, req: Request):
                 }
             )
         
-        # 3. 调用AI进行解读
-        interpretation = agent.consult(
+        # 3. 调用AI进行解读（使用异步执行，避免阻塞其他请求）
+        # 将同步的AI调用放到线程池中执行，不阻塞事件循环
+        interpretation = await asyncio.to_thread(
+            agent.consult,
             hexagram_data,
             request.question,
             stream_mode=False
@@ -340,9 +343,10 @@ async def interpret_divination(request: DivinationRequest, req: Request):
         changed_info = None
         
         try:
-            # 尝试获取本卦信息（带超时保护）
+            # 尝试获取本卦信息（使用异步执行，避免阻塞）
             try:
-                original_info_dict = agent.get_hexagram_info(
+                original_info_dict = await asyncio.to_thread(
+                    agent.get_hexagram_info,
                     hexagram_data['original_name'],
                     hexagram_data['original_nature']
                 )
@@ -353,9 +357,10 @@ async def interpret_divination(request: DivinationRequest, req: Request):
                 # 使用默认值，不阻塞主流程
                 original_info = None
             
-            # 尝试获取变卦信息（带超时保护）
+            # 尝试获取变卦信息（使用异步执行，避免阻塞）
             try:
-                changed_info_dict = agent.get_hexagram_info(
+                changed_info_dict = await asyncio.to_thread(
+                    agent.get_hexagram_info,
                     hexagram_data['changed_name'],
                     hexagram_data['changed_nature']
                 )
