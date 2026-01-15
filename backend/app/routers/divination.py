@@ -1,9 +1,10 @@
 """
 占卜相关API路由
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from collections import defaultdict
 from app.core.processor import output_hexagram_results
 from app.core.generator import yarrow_hexagram
 from app.core.karma_system import KarmaSystem
@@ -13,9 +14,32 @@ import time
 
 router = APIRouter()
 
-# 初始化因果系统（全局单例）
+# 存储每个用户的元气系统（基于IP地址实现用户隔离）
+# 使用 defaultdict 自动为新用户创建元气系统
 # K=20 标准模式：1分钟内连续算会有痛感，连点3次直接没电，需要休息30秒以上才能恢复常态
-karma_system = KarmaSystem(max_vitality=100.0, base_cost=5.0, penalty_factor=20.0)
+user_karma_systems = defaultdict(
+    lambda: KarmaSystem(max_vitality=100.0, base_cost=5.0, penalty_factor=20.0)
+)
+
+
+def get_client_ip(req: Request) -> str:
+    """
+    获取客户端真实IP地址
+    考虑代理和CDN的情况（如Cloudflare）
+    """
+    # 优先使用 X-Forwarded-For 头（如果有代理）
+    forwarded_for = req.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # 取第一个IP（原始客户端IP）
+        return forwarded_for.split(",")[0].strip()
+    
+    # 使用 CF-Connecting-IP（Cloudflare）
+    cf_ip = req.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip.strip()
+    
+    # 否则使用直接连接的IP
+    return req.client.host if req.client else "unknown"
 
 
 class SingleLineResponse(BaseModel):
@@ -64,7 +88,7 @@ class DivinationResponse(BaseModel):
 
 
 @router.post("/divination/generate-line", response_model=SingleLineResponse)
-async def generate_single_line():
+async def generate_single_line(req: Request):
     """
     生成单个爻
     
@@ -74,6 +98,10 @@ async def generate_single_line():
     注意：生成单个爻时不消耗元气，元气消耗在完成6个爻后统一结算。
     """
     try:
+        # 获取用户IP并获取该用户的元气系统
+        client_ip = get_client_ip(req)
+        karma_system = user_karma_systems[client_ip]
+        
         # 直接生成爻，不消耗元气
         value = yarrow_hexagram()  # 返回 6, 7, 8, 或 9
         binary = 1 if value in [7, 9] else 0  # 7和9是阳爻(1)，6和8是阴爻(0)
@@ -130,7 +158,7 @@ async def generate_hexagram():
 
 
 @router.post("/divination/interpret", response_model=DivinationResponse)
-async def interpret_divination(request: DivinationRequest):
+async def interpret_divination(request: DivinationRequest, req: Request):
     """
     AI解读占卜结果
     
@@ -144,6 +172,10 @@ async def interpret_divination(request: DivinationRequest):
     如果生成失败，不会扣除元气，保证公平交易。
     """
     try:
+        # 获取用户IP并获取该用户的元气系统
+        client_ip = get_client_ip(req)
+        karma_system = user_karma_systems[client_ip]
+        
         # 更新元气值（考虑衰减和恢复）
         karma_system.update_vitality()
         
@@ -319,19 +351,27 @@ async def interpret_divination(request: DivinationRequest):
 
 
 @router.get("/divination/karma-status")
-async def get_karma_status():
+async def get_karma_status(req: Request):
     """
     获取当前元气状态（不消耗元气）
     """
+    # 获取用户IP并获取该用户的元气系统
+    client_ip = get_client_ip(req)
+    karma_system = user_karma_systems[client_ip]
+    
     return karma_system.get_status()
 
 
 @router.post("/divination/recharge")
-async def recharge_karma():
+async def recharge_karma(req: Request):
     """
     充能接口（付费恢复元气）
     模拟付费流程，实际应该对接支付系统
     """
+    # 获取用户IP并获取该用户的元气系统
+    client_ip = get_client_ip(req)
+    karma_system = user_karma_systems[client_ip]
+    
     # 模拟付费成功，恢复元气到满值
     karma_system.current_vitality = karma_system.max_vitality
     karma_system.last_recovery_time = time.time()
