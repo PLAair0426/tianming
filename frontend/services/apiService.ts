@@ -63,7 +63,23 @@ export const generateSingleLine = async () => {
       
       // 处理详细的错误信息
       let errorMessage = '';
-      if (typeof errorData.detail === 'string') {
+      
+      // 如果是429错误（限流），特殊处理
+      if (response.status === 429 && errorData.detail) {
+        const detail = typeof errorData.detail === 'object' ? errorData.detail : {};
+        const errorType = detail.error || '';
+        
+        if (errorType === '请求过于频繁' || detail.limit_info) {
+          // 限流错误
+          const limitInfo = detail.limit_info || {};
+          errorMessage = `请求过于频繁\n\n` +
+            `每分钟最多30次请求，请在 ${limitInfo.retry_after || 60} 秒后重试。\n\n` +
+            `当前请求数：${limitInfo.current_requests || 0}/${limitInfo.max_requests || 30}`;
+        } else {
+          // 其他429错误
+          errorMessage = detail.message || detail.error || '请求被限制';
+        }
+      } else if (typeof errorData.detail === 'string') {
         errorMessage = errorData.detail;
       } else if (errorData.detail && typeof errorData.detail === 'object') {
         // 如果是对象，提取 message 和 hint
@@ -133,14 +149,27 @@ export const getDivination = async (
         errorData = { detail: `HTTP ${response.status}: ${response.statusText}` };
       }
       
-      // 如果是429错误（元气不足），提供友好的错误信息
+      // 如果是429错误，区分限流和元气不足
       if (response.status === 429 && errorData.detail) {
         const detail = typeof errorData.detail === 'object' ? errorData.detail : {};
-        const errorMsg = `元气不足：${detail.message || '无法完成占卜'}\n\n` +
-          `当前元气：${detail.current_vitality || 0}%\n` +
-          `需要消耗：${detail.required_cost || 0}%\n\n` +
-          `请稍等片刻，让元气恢复后再试。`;
-        throw new Error(errorMsg);
+        const errorType = detail.error || '';
+        
+        // 判断是限流错误还是元气不足错误
+        if (errorType === '请求过于频繁' || detail.limit_info) {
+          // 限流错误
+          const limitInfo = detail.limit_info || {};
+          const errorMsg = `请求过于频繁\n\n` +
+            `每分钟最多10次请求，请在 ${limitInfo.retry_after || 60} 秒后重试。\n\n` +
+            `当前请求数：${limitInfo.current_requests || 0}/${limitInfo.max_requests || 10}`;
+          throw new Error(errorMsg);
+        } else {
+          // 元气不足错误
+          const errorMsg = `元气不足：${detail.message || '无法完成占卜'}\n\n` +
+            `当前元气：${detail.current_vitality || 0}%\n` +
+            `需要消耗：${detail.required_cost || 0}%\n\n` +
+            `请稍等片刻，让元气恢复后再试。`;
+          throw new Error(errorMsg);
+        }
       }
       
       // 处理500错误的详细错误信息
