@@ -199,6 +199,29 @@ git remote remove origin
 git remote add origin https://github.com/YOUR_USERNAME/celestial-divination.git
 ```
 
+### Q: 推送时提示 "rejected: fetch first" 或 "Updates were rejected"
+A: 这表示远程仓库有本地没有的提交（通常是创建仓库时勾选了 README）。解决方法：
+
+**方法 1：合并远程更改（推荐）**
+```bash
+# 先拉取远程更改并合并
+git pull origin main --allow-unrelated-histories
+
+# 如果有冲突，解决冲突后再次提交
+git add .
+git commit -m "合并远程更改"
+
+# 然后推送
+git push -u origin main
+```
+
+**方法 2：如果确定要用本地代码覆盖远程（谨慎使用）**
+```bash
+# 强制推送（会覆盖远程的所有内容）
+git push -u origin main --force
+```
+⚠️ **警告**：强制推送会覆盖远程仓库的所有内容，如果其他人也在使用这个仓库，不要使用此方法！
+
 ### Q: 推送时提示认证失败
 A: 
 - 使用 Personal Access Token 而不是密码
