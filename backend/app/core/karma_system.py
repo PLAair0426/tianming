@@ -53,13 +53,21 @@ class KarmaSystem:
         else:
             delta_t = current_time - self.last_cast_time
         
-        # 防止除以零，设置最小间隔为 0.1 秒
-        delta_t = max(0.1, delta_t)
+        # 防止除以零，设置最小间隔为 1.0 秒
+        # 对于极短间隔（小于1秒），统一按1秒计算，避免消耗无限增长
+        delta_t = max(1.0, delta_t)
 
         # 2. 计算预计消耗
         # 核心公式：Cost = Base * (1 + K / dt)
+        # 由于delta_t最小为1秒，multiplier最大为 1 + K，消耗最大为 Base * (1 + K)
+        # 例如：Base=5, K=20，最大消耗为 5 * 21 = 105%
         multiplier = 1 + (self.penalty_factor / delta_t)
         estimated_cost = self.base_cost * multiplier
+        
+        # 设置消耗上限：最多不超过最大元气值的1.2倍，防止异常高的消耗
+        # 这样可以避免在极端情况下计算出不合理的消耗值
+        max_cost = self.max_vitality * 1.2
+        estimated_cost = min(estimated_cost, max_cost)
         estimated_cost = round(estimated_cost, 2)
 
         # 3. 判断是否买得起

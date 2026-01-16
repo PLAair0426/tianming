@@ -359,13 +359,15 @@ async def interpret_divination(request: DivinationRequest, req: Request, respons
             
             if not preview["can_afford"]:
                 # 还没生成就没钱了，直接报错返回，不扣任何东西
+                # 如果消耗超过最大元气值，显示最大元气值作为提示（避免显示不合理的值）
+                required_cost = min(preview["estimated_cost"], karma_system.max_vitality * 1.5)
                 raise HTTPException(
                     status_code=429,  # Too Many Requests
                     detail={
                         "error": "元气不足",
-                        "message": "元神枯竭，无法窥探天机",
+                        "message": "元神枯竭，无法窥探天机。请稍作休息，让元气恢复后再试。",
                         "current_vitality": preview["current_vitality"],
-                        "required_cost": preview["estimated_cost"],
+                        "required_cost": round(required_cost, 2),
                         "karma_status": karma_system.get_status()
                     }
                 )
