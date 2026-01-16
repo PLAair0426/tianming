@@ -579,6 +579,14 @@ export default function App() {
         return;
       }
       
+      // 检查是否是限流错误（请求过于频繁）
+      if (errorMessage.includes('请求过于频繁')) {
+        // 限流错误是正常的业务逻辑，不需要显示系统错误界面
+        alert(errorMessage);
+        setStep('divination');
+        return;
+      }
+      
       setFinalResult({
         hexagram: 'System_Error',
         lines: hexLines.length === 6 ? hexLines : [],
