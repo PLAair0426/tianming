@@ -148,17 +148,17 @@ async def generate_single_line(req: Request):
         # 获取用户IP并获取该用户的元气系统
         client_ip = get_client_ip(req)
         
-        # 检查API限流（生成单个爻接口：每分钟最多30次请求）
-        allowed, limit_info = check_rate_limit(client_ip, max_requests=30, window_seconds=60)
-        if not allowed:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "error": "请求过于频繁",
-                    "message": f"请稍后再试，每分钟最多30次请求。请在 {limit_info['retry_after']} 秒后重试。",
-                    "limit_info": limit_info
-                }
-            )
+        # API限流已禁用（用户要求不限制请求次数）
+        # allowed, limit_info = check_rate_limit(client_ip, max_requests=30, window_seconds=60)
+        # if not allowed:
+        #     raise HTTPException(
+        #         status_code=429,
+        #         detail={
+        #             "error": "请求过于频繁",
+        #             "message": f"请稍后再试，每分钟最多30次请求。请在 {limit_info['retry_after']} 秒后重试。",
+        #             "limit_info": limit_info
+        #         }
+        #     )
         
         karma_system = user_karma_systems[client_ip]
         
@@ -235,18 +235,18 @@ async def interpret_divination(request: DivinationRequest, req: Request):
         # 获取用户IP并获取该用户的元气系统
         client_ip = get_client_ip(req)
         
-        # 检查API限流（防止单个用户占用过多资源）
+        # API限流已禁用（用户要求不限制请求次数）
         # 占卜解读接口：每分钟最多10次请求
-        allowed, limit_info = check_rate_limit(client_ip, max_requests=10, window_seconds=60)
-        if not allowed:
-            raise HTTPException(
-                status_code=429,  # Too Many Requests
-                detail={
-                    "error": "请求过于频繁",
-                    "message": f"请稍后再试，每分钟最多10次请求。请在 {limit_info['retry_after']} 秒后重试。",
-                    "limit_info": limit_info
-                }
-            )
+        # allowed, limit_info = check_rate_limit(client_ip, max_requests=10, window_seconds=60)
+        # if not allowed:
+        #     raise HTTPException(
+        #         status_code=429,  # Too Many Requests
+        #         detail={
+        #             "error": "请求过于频繁",
+        #             "message": f"请稍后再试，每分钟最多10次请求。请在 {limit_info['retry_after']} 秒后重试。",
+        #             "limit_info": limit_info
+        #         }
+        #     )
         
         karma_system = user_karma_systems[client_ip]
         
@@ -449,17 +449,18 @@ async def recharge_karma(req: Request):
     # 获取用户IP并获取该用户的元气系统
     client_ip = get_client_ip(req)
     
-    # 检查API限流（充能接口：每分钟最多5次请求，防止滥用）
-    allowed, limit_info = check_rate_limit(client_ip, max_requests=5, window_seconds=60)
-    if not allowed:
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "请求过于频繁",
-                "message": f"请稍后再试，每分钟最多5次充能。请在 {limit_info['retry_after']} 秒后重试。",
-                "limit_info": limit_info
-            }
-        )
+    # API限流已禁用（用户要求不限制请求次数）
+    # 充能接口：每分钟最多5次请求，防止滥用
+    # allowed, limit_info = check_rate_limit(client_ip, max_requests=5, window_seconds=60)
+    # if not allowed:
+    #     raise HTTPException(
+    #         status_code=429,
+    #         detail={
+    #             "error": "请求过于频繁",
+    #             "message": f"请稍后再试，每分钟最多5次充能。请在 {limit_info['retry_after']} 秒后重试。",
+    #             "limit_info": limit_info
+    #         }
+    #     )
     
     karma_system = user_karma_systems[client_ip]
     
