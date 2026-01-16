@@ -232,19 +232,7 @@ async def generate_single_line(req: Request, response: Response):
         # 获取用户ID并获取该用户的元气系统
         user_id = get_user_id(req)
         
-        # 检查API限流（生成单个爻接口：每小时最多30次请求）
-        allowed, limit_info = check_rate_limit(user_id, max_requests=30, window_seconds=3600)
-        if not allowed:
-            retry_after_minutes = limit_info['retry_after'] // 60
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "error": "请求过于频繁",
-                    "message": f"请稍后再试，每小时最多30次请求。请在 {retry_after_minutes} 分钟后重试。",
-                    "limit_info": limit_info
-                }
-            )
-        
+        # 生成单个爻不限制请求次数（因为不消耗元气，且计算量很小）
         karma_system = user_karma_systems[user_id]
         
         # 直接生成爻，不消耗元气
@@ -615,7 +603,22 @@ async def get_rate_limit_status(req: Request, response: Response):
     # 检查各个接口的限流状态
     status = {}
     
-    # 1. 生成单个爻接口（每小时30次）
+    # 1. 生成单个爻接口（无限制）
+    generate_line_status = {
+        "endpoint": "generate-line",
+        "max_requests": None,  # 无限制
+        "window_seconds": None,
+        "current_requests": 0,
+        "remaining_requests": None,  # 无限制
+        "is_limited": False,
+        "retry_after": 0,
+        "retry_after_minutes": 0,
+        "note": "生成单个爻不限制请求次数（不消耗元气，计算量小）"
+    }
+    
+    status["generate_line"] = generate_line_status
+    
+    # 获取其他接口的限流记录
     records = request_records[user_id]
     # 清理过期记录
     valid_records = [
@@ -623,26 +626,6 @@ async def get_rate_limit_status(req: Request, response: Response):
         if current_time - req_time < 3600
     ]
     current_count = len(valid_records)
-    
-    generate_line_status = {
-        "endpoint": "generate-line",
-        "max_requests": 30,
-        "window_seconds": 3600,
-        "current_requests": current_count,
-        "remaining_requests": max(0, 30 - current_count),
-        "is_limited": current_count >= 30
-    }
-    
-    if current_count >= 30 and valid_records:
-        oldest_request = min(valid_records)
-        retry_after = int(3600 - (current_time - oldest_request)) + 1
-        generate_line_status["retry_after"] = retry_after
-        generate_line_status["retry_after_minutes"] = retry_after // 60
-    else:
-        generate_line_status["retry_after"] = 0
-        generate_line_status["retry_after_minutes"] = 0
-    
-    status["generate_line"] = generate_line_status
     
     # 2. 占卜解读接口（每小时10次）- 使用相同的记录
     interpret_status = {
