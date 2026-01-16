@@ -25,6 +25,49 @@ user_karma_systems = defaultdict(
 # 存储每个IP的请求记录（用于API限流）
 request_records = defaultdict(list)
 
+# 并发控制：限制同时进行的AI调用数量（最多10个）
+ai_call_semaphore = asyncio.Semaphore(10)
+
+
+def cleanup_inactive_users():
+    """
+    清理不活跃的用户数据
+    防止内存泄漏
+    """
+    current_time = time.time()
+    inactive_threshold = 24 * 3600  # 24小时未使用视为不活跃
+    
+    # 清理 user_karma_systems（超过24小时未使用）
+    inactive_ips = []
+    for ip, system in list(user_karma_systems.items()):
+        # 检查最后活跃时间
+        time_since_active = current_time - system.last_active_time
+        if time_since_active > inactive_threshold:
+            inactive_ips.append(ip)
+    
+    for ip in inactive_ips:
+        del user_karma_systems[ip]
+    
+    # 清理 request_records（超过1小时未使用）
+    record_threshold = 3600  # 1小时
+    inactive_record_ips = []
+    for ip, records in list(request_records.items()):
+        if records:
+            # 获取最近的请求时间
+            latest_request = max(records)
+            time_since_latest = current_time - latest_request
+            if time_since_latest > record_threshold:
+                inactive_record_ips.append(ip)
+        else:
+            # 空记录也清理
+            inactive_record_ips.append(ip)
+    
+    for ip in inactive_record_ips:
+        del request_records[ip]
+    
+    if inactive_ips or inactive_record_ips:
+        print(f"🧹 清理了 {len(inactive_ips)} 个不活跃用户和 {len(inactive_record_ips)} 个请求记录")
+
 
 def get_client_ip(req: Request) -> str:
     """
@@ -49,7 +92,7 @@ def get_client_ip(req: Request) -> str:
 def check_rate_limit(
     client_ip: str, 
     max_requests: int = 10, 
-    window_seconds: int = 60
+    window_seconds: int = 3600  # 默认改为3600秒（1小时）
 ) -> tuple[bool, dict]:
     """
     检查是否超过限流
@@ -57,7 +100,7 @@ def check_rate_limit(
     
     :param client_ip: 客户端IP地址
     :param max_requests: 时间窗口内最大请求数
-    :param window_seconds: 时间窗口（秒）
+    :param window_seconds: 时间窗口（秒），默认3600秒（1小时）
     :return: (是否允许, 限流信息)
     """
     current_time = time.time()
@@ -148,17 +191,18 @@ async def generate_single_line(req: Request):
         # 获取用户IP并获取该用户的元气系统
         client_ip = get_client_ip(req)
         
-        # API限流已禁用（用户要求不限制请求次数）
-        # allowed, limit_info = check_rate_limit(client_ip, max_requests=30, window_seconds=60)
-        # if not allowed:
-        #     raise HTTPException(
-        #         status_code=429,
-        #         detail={
-        #             "error": "请求过于频繁",
-        #             "message": f"请稍后再试，每分钟最多30次请求。请在 {limit_info['retry_after']} 秒后重试。",
-        #             "limit_info": limit_info
-        #         }
-        #     )
+        # 检查API限流（生成单个爻接口：每小时最多30次请求）
+        allowed, limit_info = check_rate_limit(client_ip, max_requests=30, window_seconds=3600)
+        if not allowed:
+            retry_after_minutes = limit_info['retry_after'] // 60
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "请求过于频繁",
+                    "message": f"请稍后再试，每小时最多30次请求。请在 {retry_after_minutes} 分钟后重试。",
+                    "limit_info": limit_info
+                }
+            )
         
         karma_system = user_karma_systems[client_ip]
         
@@ -235,18 +279,18 @@ async def interpret_divination(request: DivinationRequest, req: Request):
         # 获取用户IP并获取该用户的元气系统
         client_ip = get_client_ip(req)
         
-        # API限流已禁用（用户要求不限制请求次数）
-        # 占卜解读接口：每分钟最多10次请求
-        # allowed, limit_info = check_rate_limit(client_ip, max_requests=10, window_seconds=60)
-        # if not allowed:
-        #     raise HTTPException(
-        #         status_code=429,  # Too Many Requests
-        #         detail={
-        #             "error": "请求过于频繁",
-        #             "message": f"请稍后再试，每分钟最多10次请求。请在 {limit_info['retry_after']} 秒后重试。",
-        #             "limit_info": limit_info
-        #         }
-        #     )
+        # 检查API限流（占卜解读接口：每小时最多10次请求）
+        allowed, limit_info = check_rate_limit(client_ip, max_requests=10, window_seconds=3600)
+        if not allowed:
+            retry_after_minutes = limit_info['retry_after'] // 60
+            raise HTTPException(
+                status_code=429,  # Too Many Requests
+                detail={
+                    "error": "请求过于频繁",
+                    "message": f"请稍后再试，每小时最多10次请求。请在 {retry_after_minutes} 分钟后重试。",
+                    "limit_info": limit_info
+                }
+            )
         
         karma_system = user_karma_systems[client_ip]
         
@@ -326,12 +370,14 @@ async def interpret_divination(request: DivinationRequest, req: Request):
         
         # 3. 调用AI进行解读（使用异步执行，避免阻塞其他请求）
         # 将同步的AI调用放到线程池中执行，不阻塞事件循环
-        interpretation = await asyncio.to_thread(
-            agent.consult,
-            hexagram_data,
-            request.question,
-            stream_mode=False
-        )
+        # 使用信号量限制并发数量，防止资源耗尽
+        async with ai_call_semaphore:
+            interpretation = await asyncio.to_thread(
+                agent.consult,
+                hexagram_data,
+                request.question,
+                stream_mode=False
+            )
         
         # 4. 生成随机技师ID
         technician_id = random.randint(1, 100)
@@ -344,12 +390,14 @@ async def interpret_divination(request: DivinationRequest, req: Request):
         
         try:
             # 尝试获取本卦信息（使用异步执行，避免阻塞）
+            # 使用信号量限制并发数量
             try:
-                original_info_dict = await asyncio.to_thread(
-                    agent.get_hexagram_info,
-                    hexagram_data['original_name'],
-                    hexagram_data['original_nature']
-                )
+                async with ai_call_semaphore:
+                    original_info_dict = await asyncio.to_thread(
+                        agent.get_hexagram_info,
+                        hexagram_data['original_name'],
+                        hexagram_data['original_nature']
+                    )
                 if original_info_dict and isinstance(original_info_dict, dict):
                     original_info = HexagramInfoResponse(**original_info_dict)
             except Exception as e:
@@ -358,12 +406,14 @@ async def interpret_divination(request: DivinationRequest, req: Request):
                 original_info = None
             
             # 尝试获取变卦信息（使用异步执行，避免阻塞）
+            # 使用信号量限制并发数量
             try:
-                changed_info_dict = await asyncio.to_thread(
-                    agent.get_hexagram_info,
-                    hexagram_data['changed_name'],
-                    hexagram_data['changed_nature']
-                )
+                async with ai_call_semaphore:
+                    changed_info_dict = await asyncio.to_thread(
+                        agent.get_hexagram_info,
+                        hexagram_data['changed_name'],
+                        hexagram_data['changed_nature']
+                    )
                 if changed_info_dict and isinstance(changed_info_dict, dict):
                     changed_info = HexagramInfoResponse(**changed_info_dict)
             except Exception as e:
@@ -389,6 +439,9 @@ async def interpret_divination(request: DivinationRequest, req: Request):
         
         # 记录使用（用于计算衰减和恢复）
         karma_system.record_use()
+        
+        # 更新最后活跃时间（用于内存清理）
+        karma_system.last_active_time = time.time()
         
         # 构建返回的元气状态信息
         karma_status = {
@@ -449,18 +502,18 @@ async def recharge_karma(req: Request):
     # 获取用户IP并获取该用户的元气系统
     client_ip = get_client_ip(req)
     
-    # API限流已禁用（用户要求不限制请求次数）
-    # 充能接口：每分钟最多5次请求，防止滥用
-    # allowed, limit_info = check_rate_limit(client_ip, max_requests=5, window_seconds=60)
-    # if not allowed:
-    #     raise HTTPException(
-    #         status_code=429,
-    #         detail={
-    #             "error": "请求过于频繁",
-    #             "message": f"请稍后再试，每分钟最多5次充能。请在 {limit_info['retry_after']} 秒后重试。",
-    #             "limit_info": limit_info
-    #         }
-    #     )
+    # 检查API限流（充能接口：每小时最多5次请求，防止滥用）
+    allowed, limit_info = check_rate_limit(client_ip, max_requests=5, window_seconds=3600)
+    if not allowed:
+        retry_after_minutes = limit_info['retry_after'] // 60
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "请求过于频繁",
+                "message": f"请稍后再试，每小时最多5次充能。请在 {retry_after_minutes} 分钟后重试。",
+                "limit_info": limit_info
+            }
+        )
     
     karma_system = user_karma_systems[client_ip]
     

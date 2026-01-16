@@ -6,6 +6,7 @@ FastAPI 主应用入口
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import divination
+import asyncio
 
 # 创建FastAPI应用实例
 app = FastAPI(
@@ -73,6 +74,30 @@ else:
 
 # 注册路由
 app.include_router(divination.router, prefix="/api", tags=["占卜"])
+
+
+async def periodic_cleanup():
+    """
+    定期清理不活跃用户数据
+    防止内存泄漏
+    """
+    while True:
+        await asyncio.sleep(600)  # 每10分钟清理一次
+        try:
+            divination.cleanup_inactive_users()
+        except Exception as e:
+            print(f"❌ 清理不活跃用户时出错: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    应用启动时执行
+    启动定期清理任务
+    """
+    print("🚀 启动定期清理任务...")
+    asyncio.create_task(periodic_cleanup())
+    print("✅ 定期清理任务已启动（每10分钟清理一次不活跃用户）")
 
 
 @app.get("/")
