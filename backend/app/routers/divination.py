@@ -31,8 +31,8 @@ request_records = defaultdict(list)
 ai_call_semaphore = asyncio.Semaphore(10)
 
 # 用户级别的锁：防止同一用户的并发请求导致元气重复扣除
-from collections import defaultdict as defaultdict_sync
-user_locks = defaultdict_sync(lambda: asyncio.Lock())
+# 使用 threading.Lock 而不是 asyncio.Lock，因为需要在异步上下文中使用
+user_locks = defaultdict(lambda: asyncio.Lock())
 
 
 def cleanup_inactive_users():
@@ -97,21 +97,34 @@ def get_client_ip(req: Request) -> str:
 
 def get_user_id(req: Request) -> str:
     """
-    获取用户唯一标识（IP + User-Agent组合）
-    用于区分同网络环境下的不同用户
+    获取用户唯一标识
+    优先使用Cookie中的用户ID，如果没有则生成新的（基于IP + User-Agent）
+    用于区分同网络环境下的不同用户，并保持用户ID的持久性
     
-    使用IP + User-Agent组合的原因：
-    1. 同网络环境（共享公网IP）的用户可以通过User-Agent区分
-    2. 不同网络环境的用户通过IP区分
-    3. 不需要前端配合，实现简单
+    策略：
+    1. 优先使用Cookie中的用户ID（如果存在且有效）
+    2. 如果没有Cookie，使用IP + User-Agent生成新的用户ID
+    3. 将用户ID设置到Cookie中，保持持久性（在响应时完成）
     """
     import hashlib
     
+    # 尝试从Cookie中获取用户ID
+    user_id_cookie = req.cookies.get("user_id")
+    
+    if user_id_cookie:
+        # 验证Cookie中的用户ID格式（应该是32位MD5哈希）
+        if len(user_id_cookie) == 32 and all(c in '0123456789abcdef' for c in user_id_cookie):
+            return user_id_cookie
+    
+    # 如果没有Cookie或Cookie无效，生成新的用户ID
     client_ip = get_client_ip(req)
     user_agent = req.headers.get("User-Agent", "unknown")
     
     # 组合IP和User-Agent生成唯一标识
     user_id = hashlib.md5(f"{client_ip}:{user_agent}".encode()).hexdigest()
+    
+    # 注意：Cookie设置需要在响应中完成，这里只返回用户ID
+    # 实际的Cookie设置会在响应时通过Response对象完成
     return user_id
 
 
@@ -137,8 +150,10 @@ def check_rate_limit(
         if current_time - req_time < window_seconds
     ]
     
-    # 检查是否超过限制
-    if len(request_records[user_id]) >= max_requests:
+    # 检查是否超过限制（在记录本次请求之前检查）
+    current_count = len(request_records[user_id])
+    
+    if current_count >= max_requests:
         # 计算需要等待的时间
         if request_records[user_id]:
             oldest_request = min(request_records[user_id])
@@ -149,11 +164,11 @@ def check_rate_limit(
         return False, {
             "max_requests": max_requests,
             "window_seconds": window_seconds,
-            "current_requests": len(request_records[user_id]),
+            "current_requests": current_count,  # 使用清理后的实际请求数
             "retry_after": retry_after
         }
     
-    # 记录本次请求
+    # 记录本次请求（只有在未超过限制时才记录）
     request_records[user_id].append(current_time)
     return True, {}
 
@@ -509,15 +524,16 @@ async def interpret_divination(request: DivinationRequest, req: Request, respons
                 "is_glitch": preview["is_glitch"],
                 "warning_level": preview["warning_level"]
             }
-        
-        return DivinationResponse(
-            hexagram_data=HexagramResponse(**hexagram_data),
-            interpretation=interpretation,
-            technician_id=technician_id,
-            original_info=original_info,
-            changed_info=changed_info,
-            karma_status=karma_status
-        )
+            
+            # 返回结果（必须在 async with 块内，因为所有变量都在这里定义）
+            return DivinationResponse(
+                hexagram_data=HexagramResponse(**hexagram_data),
+                interpretation=interpretation,
+                technician_id=technician_id,
+                original_info=original_info,
+                changed_info=changed_info,
+                karma_status=karma_status
+            )
         
     except HTTPException:
         raise
