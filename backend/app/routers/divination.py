@@ -15,14 +15,16 @@ import asyncio
 
 router = APIRouter()
 
-# 存储每个用户的元气系统（基于IP地址实现用户隔离）
+# 存储每个用户的元气系统（基于用户ID实现用户隔离）
 # 使用 defaultdict 自动为新用户创建元气系统
 # K=20 标准模式：1分钟内连续算会有痛感，连点3次直接没电，需要休息30秒以上才能恢复常态
+# 注意：使用 user_id（IP + User-Agent组合）而不是 client_ip，以区分同网络环境的不同用户
 user_karma_systems = defaultdict(
     lambda: KarmaSystem(max_vitality=100.0, base_cost=5.0, penalty_factor=20.0)
 )
 
-# 存储每个IP的请求记录（用于API限流）
+# 存储每个用户的请求记录（用于API限流）
+# 使用 user_id 而不是 client_ip，以区分同网络环境的不同用户
 request_records = defaultdict(list)
 
 # 并发控制：限制同时进行的AI调用数量（最多10个）
@@ -38,35 +40,35 @@ def cleanup_inactive_users():
     inactive_threshold = 24 * 3600  # 24小时未使用视为不活跃
     
     # 清理 user_karma_systems（超过24小时未使用）
-    inactive_ips = []
-    for ip, system in list(user_karma_systems.items()):
+    inactive_user_ids = []
+    for user_id, system in list(user_karma_systems.items()):
         # 检查最后活跃时间
         time_since_active = current_time - system.last_active_time
         if time_since_active > inactive_threshold:
-            inactive_ips.append(ip)
+            inactive_user_ids.append(user_id)
     
-    for ip in inactive_ips:
-        del user_karma_systems[ip]
+    for user_id in inactive_user_ids:
+        del user_karma_systems[user_id]
     
     # 清理 request_records（超过1小时未使用）
     record_threshold = 3600  # 1小时
-    inactive_record_ips = []
-    for ip, records in list(request_records.items()):
+    inactive_record_user_ids = []
+    for user_id, records in list(request_records.items()):
         if records:
             # 获取最近的请求时间
             latest_request = max(records)
             time_since_latest = current_time - latest_request
             if time_since_latest > record_threshold:
-                inactive_record_ips.append(ip)
+                inactive_record_user_ids.append(user_id)
         else:
             # 空记录也清理
-            inactive_record_ips.append(ip)
+            inactive_record_user_ids.append(user_id)
     
-    for ip in inactive_record_ips:
-        del request_records[ip]
+    for user_id in inactive_record_user_ids:
+        del request_records[user_id]
     
-    if inactive_ips or inactive_record_ips:
-        print(f"🧹 清理了 {len(inactive_ips)} 个不活跃用户和 {len(inactive_record_ips)} 个请求记录")
+    if inactive_user_ids or inactive_record_user_ids:
+        print(f"🧹 清理了 {len(inactive_user_ids)} 个不活跃用户和 {len(inactive_record_user_ids)} 个请求记录")
 
 
 def get_client_ip(req: Request) -> str:
@@ -89,8 +91,28 @@ def get_client_ip(req: Request) -> str:
     return req.client.host if req.client else "unknown"
 
 
+def get_user_id(req: Request) -> str:
+    """
+    获取用户唯一标识（IP + User-Agent组合）
+    用于区分同网络环境下的不同用户
+    
+    使用IP + User-Agent组合的原因：
+    1. 同网络环境（共享公网IP）的用户可以通过User-Agent区分
+    2. 不同网络环境的用户通过IP区分
+    3. 不需要前端配合，实现简单
+    """
+    import hashlib
+    
+    client_ip = get_client_ip(req)
+    user_agent = req.headers.get("User-Agent", "unknown")
+    
+    # 组合IP和User-Agent生成唯一标识
+    user_id = hashlib.md5(f"{client_ip}:{user_agent}".encode()).hexdigest()
+    return user_id
+
+
 def check_rate_limit(
-    client_ip: str, 
+    user_id: str, 
     max_requests: int = 10, 
     window_seconds: int = 3600  # 默认改为3600秒（1小时）
 ) -> tuple[bool, dict]:
@@ -98,7 +120,7 @@ def check_rate_limit(
     检查是否超过限流
     防止单个用户占用过多资源，影响其他用户
     
-    :param client_ip: 客户端IP地址
+    :param user_id: 用户唯一标识（IP + User-Agent组合）
     :param max_requests: 时间窗口内最大请求数
     :param window_seconds: 时间窗口（秒），默认3600秒（1小时）
     :return: (是否允许, 限流信息)
@@ -106,16 +128,16 @@ def check_rate_limit(
     current_time = time.time()
     
     # 清理过期记录（超过时间窗口的请求）
-    request_records[client_ip] = [
-        req_time for req_time in request_records[client_ip]
+    request_records[user_id] = [
+        req_time for req_time in request_records[user_id]
         if current_time - req_time < window_seconds
     ]
     
     # 检查是否超过限制
-    if len(request_records[client_ip]) >= max_requests:
+    if len(request_records[user_id]) >= max_requests:
         # 计算需要等待的时间
-        if request_records[client_ip]:
-            oldest_request = min(request_records[client_ip])
+        if request_records[user_id]:
+            oldest_request = min(request_records[user_id])
             retry_after = int(window_seconds - (current_time - oldest_request)) + 1
         else:
             retry_after = window_seconds
@@ -123,12 +145,12 @@ def check_rate_limit(
         return False, {
             "max_requests": max_requests,
             "window_seconds": window_seconds,
-            "current_requests": len(request_records[client_ip]),
+            "current_requests": len(request_records[user_id]),
             "retry_after": retry_after
         }
     
     # 记录本次请求
-    request_records[client_ip].append(current_time)
+    request_records[user_id].append(current_time)
     return True, {}
 
 
@@ -188,11 +210,11 @@ async def generate_single_line(req: Request):
     注意：生成单个爻时不消耗元气，元气消耗在完成6个爻后统一结算。
     """
     try:
-        # 获取用户IP并获取该用户的元气系统
-        client_ip = get_client_ip(req)
+        # 获取用户ID并获取该用户的元气系统
+        user_id = get_user_id(req)
         
         # 检查API限流（生成单个爻接口：每小时最多30次请求）
-        allowed, limit_info = check_rate_limit(client_ip, max_requests=30, window_seconds=3600)
+        allowed, limit_info = check_rate_limit(user_id, max_requests=30, window_seconds=3600)
         if not allowed:
             retry_after_minutes = limit_info['retry_after'] // 60
             raise HTTPException(
@@ -204,7 +226,7 @@ async def generate_single_line(req: Request):
                 }
             )
         
-        karma_system = user_karma_systems[client_ip]
+        karma_system = user_karma_systems[user_id]
         
         # 直接生成爻，不消耗元气
         value = yarrow_hexagram()  # 返回 6, 7, 8, 或 9
@@ -276,11 +298,11 @@ async def interpret_divination(request: DivinationRequest, req: Request):
     如果生成失败，不会扣除元气，保证公平交易。
     """
     try:
-        # 获取用户IP并获取该用户的元气系统
-        client_ip = get_client_ip(req)
+        # 获取用户ID并获取该用户的元气系统
+        user_id = get_user_id(req)
         
         # 检查API限流（占卜解读接口：每小时最多10次请求）
-        allowed, limit_info = check_rate_limit(client_ip, max_requests=10, window_seconds=3600)
+        allowed, limit_info = check_rate_limit(user_id, max_requests=10, window_seconds=3600)
         if not allowed:
             retry_after_minutes = limit_info['retry_after'] // 60
             raise HTTPException(
@@ -292,7 +314,7 @@ async def interpret_divination(request: DivinationRequest, req: Request):
                 }
             )
         
-        karma_system = user_karma_systems[client_ip]
+        karma_system = user_karma_systems[user_id]
         
         # 更新元气值（考虑衰减和恢复）
         karma_system.update_vitality()
@@ -486,9 +508,9 @@ async def get_karma_status(req: Request):
     """
     获取当前元气状态（不消耗元气）
     """
-    # 获取用户IP并获取该用户的元气系统
-    client_ip = get_client_ip(req)
-    karma_system = user_karma_systems[client_ip]
+    # 获取用户ID并获取该用户的元气系统
+    user_id = get_user_id(req)
+    karma_system = user_karma_systems[user_id]
     
     return karma_system.get_status()
 
@@ -499,11 +521,11 @@ async def recharge_karma(req: Request):
     充能接口（付费恢复元气）
     模拟付费流程，实际应该对接支付系统
     """
-    # 获取用户IP并获取该用户的元气系统
-    client_ip = get_client_ip(req)
+    # 获取用户ID并获取该用户的元气系统
+    user_id = get_user_id(req)
     
     # 检查API限流（充能接口：每小时最多5次请求，防止滥用）
-    allowed, limit_info = check_rate_limit(client_ip, max_requests=5, window_seconds=3600)
+    allowed, limit_info = check_rate_limit(user_id, max_requests=5, window_seconds=3600)
     if not allowed:
         retry_after_minutes = limit_info['retry_after'] // 60
         raise HTTPException(
@@ -515,7 +537,7 @@ async def recharge_karma(req: Request):
             }
         )
     
-    karma_system = user_karma_systems[client_ip]
+    karma_system = user_karma_systems[user_id]
     
     # 模拟付费成功，恢复元气到满值
     karma_system.current_vitality = karma_system.max_vitality
