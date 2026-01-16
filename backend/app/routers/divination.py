@@ -1,7 +1,7 @@
 """
 占卜相关API路由
 """
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from collections import defaultdict
@@ -29,6 +29,10 @@ request_records = defaultdict(list)
 
 # 并发控制：限制同时进行的AI调用数量（最多10个）
 ai_call_semaphore = asyncio.Semaphore(10)
+
+# 用户级别的锁：防止同一用户的并发请求导致元气重复扣除
+from collections import defaultdict as defaultdict_sync
+user_locks = defaultdict_sync(lambda: asyncio.Lock())
 
 
 def cleanup_inactive_users():
@@ -200,7 +204,7 @@ class DivinationResponse(BaseModel):
 
 
 @router.post("/divination/generate-line", response_model=SingleLineResponse)
-async def generate_single_line(req: Request):
+async def generate_single_line(req: Request, response: Response):
     """
     生成单个爻
     
@@ -284,7 +288,7 @@ async def generate_hexagram():
 
 
 @router.post("/divination/interpret", response_model=DivinationResponse)
-async def interpret_divination(request: DivinationRequest, req: Request):
+async def interpret_divination(request: DivinationRequest, req: Request, response: Response):
     """
     AI解读占卜结果
     
@@ -301,182 +305,210 @@ async def interpret_divination(request: DivinationRequest, req: Request):
         # 获取用户ID并获取该用户的元气系统
         user_id = get_user_id(req)
         
-        # 检查API限流（占卜解读接口：每小时最多10次请求）
-        allowed, limit_info = check_rate_limit(user_id, max_requests=10, window_seconds=3600)
-        if not allowed:
-            retry_after_minutes = limit_info['retry_after'] // 60
-            raise HTTPException(
-                status_code=429,  # Too Many Requests
-                detail={
-                    "error": "请求过于频繁",
-                    "message": f"请稍后再试，每小时最多10次请求。请在 {retry_after_minutes} 分钟后重试。",
-                    "limit_info": limit_info
-                }
-            )
+        # 设置Cookie，保持用户ID的持久性（30天有效期）
+        response.set_cookie(
+            key="user_id",
+            value=user_id,
+            max_age=30 * 24 * 3600,  # 30天
+            httponly=True,  # 防止XSS攻击
+            samesite="lax"  # CSRF保护
+        )
         
-        karma_system = user_karma_systems[user_id]
-        
-        # 更新元气值（考虑衰减和恢复）
-        karma_system.update_vitality()
-        
-        # 检查元气是否足够（元气为0时不能使用）
-        if karma_system.current_vitality <= 0:
-            raise HTTPException(
-                status_code=429,  # Too Many Requests
-                detail={
-                    "error": "元气不足",
-                    "message": "元神枯竭，无法窥探天机。请稍作休息，或考虑充值恢复元气。",
-                    "current_vitality": karma_system.current_vitality,
-                    "required_cost": 0,
-                    "karma_status": karma_system.get_status()
-                }
-            )
-        
-        # --- 阶段一：验资（Pre-check）---
-        # 这一步不扣钱，只是看用户有没有资格完成整个占卜
-        preview = karma_system.calculate_cost_preview()
-        
-        if not preview["can_afford"]:
-            # 还没生成就没钱了，直接报错返回，不扣任何东西
-            raise HTTPException(
-                status_code=429,  # Too Many Requests
-                detail={
-                    "error": "元气不足",
-                    "message": "元神枯竭，无法窥探天机",
-                    "current_vitality": preview["current_vitality"],
-                    "required_cost": preview["estimated_cost"],
-                    "karma_status": karma_system.get_status()
-                }
-            )
-        
-        # --- 阶段二：生成卦象和AI解读（Business Logic）---
-        # 如果这里报错了，代码会中断，永远不会走到阶段三，所以用户不会亏钱
-        
-        # 1. 生成或使用提供的卦象数据
-        # 如果前端提供了六爻数据（6,7,8,9数组），使用这些值生成卦象
-        # 所有卦象数据都由后端processor生成，确保数据一致性
-        if request.hex_lines and len(request.hex_lines) == 6:
-            # 验证所有值都在有效范围内（6,7,8,9）
-            if all(v in [6, 7, 8, 9] for v in request.hex_lines):
-                hexagram_data = output_hexagram_results(original_hexagram_values=request.hex_lines)
-            else:
-                # 如果值无效，生成新的卦象
-                hexagram_data = output_hexagram_results()
-        else:
-            # 后端生成卦象
-            hexagram_data = output_hexagram_results()
-        
-        # 2. 初始化AI代理
-        try:
-            agent = YiMasterAgent()
-        except ValueError as e:
-            # API_KEY 配置错误
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error": "AI服务配置错误",
-                    "message": str(e),
-                    "hint": "请在 backend 目录下创建 .env 文件，并添加 DEEPSEEK_API_KEY=your_api_key"
-                }
-            )
-        except Exception as e:
-            # 其他初始化错误
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error": "AI服务初始化失败",
-                    "message": str(e),
-                    "hint": "请检查后端日志以获取详细信息"
-                }
-            )
-        
-        # 3. 调用AI进行解读（使用异步执行，避免阻塞其他请求）
-        # 将同步的AI调用放到线程池中执行，不阻塞事件循环
-        # 使用信号量限制并发数量，防止资源耗尽
-        async with ai_call_semaphore:
-            interpretation = await asyncio.to_thread(
-                agent.consult,
-                hexagram_data,
-                request.question,
-                stream_mode=False
-            )
-        
-        # 4. 生成随机技师ID
-        technician_id = random.randint(1, 100)
-        
-        # 5. 获取卦象说明信息（本卦和变卦）
-        # 使用异步方式，避免AI调用阻塞主流程
-        # 如果AI调用失败，返回None，前端会使用默认值
-        original_info = None
-        changed_info = None
-        
-        try:
-            # 尝试获取本卦信息（使用异步执行，避免阻塞）
-            # 使用信号量限制并发数量
-            try:
-                async with ai_call_semaphore:
-                    original_info_dict = await asyncio.to_thread(
-                        agent.get_hexagram_info,
-                        hexagram_data['original_name'],
-                        hexagram_data['original_nature']
-                    )
-                if original_info_dict and isinstance(original_info_dict, dict):
-                    original_info = HexagramInfoResponse(**original_info_dict)
-            except Exception as e:
-                print(f"警告: 获取本卦信息失败: {str(e)}")
-                # 使用默认值，不阻塞主流程
-                original_info = None
+        # 使用用户级别的锁，防止并发请求导致元气重复扣除
+        async with user_locks[user_id]:
+            # 检查API限流（占卜解读接口：每小时最多10次请求）
+            allowed, limit_info = check_rate_limit(user_id, max_requests=10, window_seconds=3600)
+            if not allowed:
+                retry_after_minutes = limit_info['retry_after'] // 60
+                raise HTTPException(
+                    status_code=429,  # Too Many Requests
+                    detail={
+                        "error": "请求过于频繁",
+                        "message": f"请稍后再试，每小时最多10次请求。请在 {retry_after_minutes} 分钟后重试。",
+                        "limit_info": limit_info
+                    }
+                )
             
-            # 尝试获取变卦信息（使用异步执行，避免阻塞）
-            # 使用信号量限制并发数量
+            karma_system = user_karma_systems[user_id]
+            
+            # 更新最后活跃时间（用于内存清理）
+            karma_system.last_active_time = time.time()
+            
+            # 更新元气值（考虑衰减和恢复）
+            karma_system.update_vitality()
+            
+            # 检查元气是否足够（元气为0时不能使用）
+            if karma_system.current_vitality <= 0:
+                raise HTTPException(
+                    status_code=429,  # Too Many Requests
+                    detail={
+                        "error": "元气不足",
+                        "message": "元神枯竭，无法窥探天机。请稍作休息，或考虑充值恢复元气。",
+                        "current_vitality": karma_system.current_vitality,
+                        "required_cost": 0,
+                        "karma_status": karma_system.get_status()
+                    }
+                )
+            
+            # --- 阶段一：验资（Pre-check）---
+            # 这一步不扣钱，只是看用户有没有资格完成整个占卜
+            preview = karma_system.calculate_cost_preview()
+            
+            if not preview["can_afford"]:
+                # 还没生成就没钱了，直接报错返回，不扣任何东西
+                raise HTTPException(
+                    status_code=429,  # Too Many Requests
+                    detail={
+                        "error": "元气不足",
+                        "message": "元神枯竭，无法窥探天机",
+                        "current_vitality": preview["current_vitality"],
+                        "required_cost": preview["estimated_cost"],
+                        "karma_status": karma_system.get_status()
+                    }
+                )
+            
+            # 记录预计消耗（用于后续结算）
+            estimated_cost = preview["estimated_cost"]
+        
+            # --- 阶段二：生成卦象和AI解读（Business Logic）---
+            # 如果这里报错了，代码会中断，永远不会走到阶段三，所以用户不会亏钱
+            
+            # 1. 生成或使用提供的卦象数据
+            # 如果前端提供了六爻数据（6,7,8,9数组），使用这些值生成卦象
+            # 所有卦象数据都由后端processor生成，确保数据一致性
+            if request.hex_lines and len(request.hex_lines) == 6:
+                # 验证所有值都在有效范围内（6,7,8,9）
+                if all(v in [6, 7, 8, 9] for v in request.hex_lines):
+                    hexagram_data = output_hexagram_results(original_hexagram_values=request.hex_lines)
+                else:
+                    # 如果值无效，生成新的卦象
+                    hexagram_data = output_hexagram_results()
+            else:
+                # 后端生成卦象
+                hexagram_data = output_hexagram_results()
+            
+            # 2. 初始化AI代理
             try:
-                async with ai_call_semaphore:
-                    changed_info_dict = await asyncio.to_thread(
-                        agent.get_hexagram_info,
-                        hexagram_data['changed_name'],
-                        hexagram_data['changed_nature']
-                    )
-                if changed_info_dict and isinstance(changed_info_dict, dict):
-                    changed_info = HexagramInfoResponse(**changed_info_dict)
+                agent = YiMasterAgent()
+            except ValueError as e:
+                # API_KEY 配置错误
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "AI服务配置错误",
+                        "message": str(e),
+                        "hint": "请在 backend 目录下创建 .env 文件，并添加 DEEPSEEK_API_KEY=your_api_key"
+                    }
+                )
             except Exception as e:
-                print(f"警告: 获取变卦信息失败: {str(e)}")
-                # 使用默认值，不阻塞主流程
-                changed_info = None
-        except Exception as e:
-            # 如果整体获取失败，不影响主流程
-            print(f"警告: 获取卦象说明信息失败: {str(e)}")
+                # 其他初始化错误
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "AI服务初始化失败",
+                        "message": str(e),
+                        "hint": "请检查后端日志以获取详细信息"
+                    }
+                )
+            
+            # 3. 调用AI进行解读（使用异步执行，避免阻塞其他请求）
+            # 将同步的AI调用放到线程池中执行，不阻塞事件循环
+            # 使用信号量限制并发数量，防止资源耗尽
+            async with ai_call_semaphore:
+                interpretation = await asyncio.to_thread(
+                    agent.consult,
+                    hexagram_data,
+                    request.question,
+                    stream_mode=False
+                )
+            
+            # 4. 生成随机技师ID
+            technician_id = random.randint(1, 100)
+            
+            # 5. 获取卦象说明信息（本卦和变卦）
+            # 使用异步方式，避免AI调用阻塞主流程
+            # 如果AI调用失败，返回None，前端会使用默认值
             original_info = None
             changed_info = None
-        
-        # --- 阶段三：结算扣费（Commit）---
-        # 既然卦象生成和AI解读都成功了，现在扣除元气
-        commit_success = karma_system.commit_transaction(preview["estimated_cost"])
-        
-        if not commit_success:
-            # 理论上不应该发生（因为已经验资过了），但防止并发问题
-            raise HTTPException(
-                status_code=500,
-                detail="结算失败，请重试"
-            )
-        
-        # 记录使用（用于计算衰减和恢复）
-        karma_system.record_use()
-        
-        # 更新最后活跃时间（用于内存清理）
-        karma_system.last_active_time = time.time()
-        
-        # 构建返回的元气状态信息
-        karma_status = {
-            "success": True,
-            "message": "卦象已成",
-            "cost": preview["estimated_cost"],
-            "current_vitality": karma_system.current_vitality,
-            "max_vitality": karma_system.max_vitality,
-            "percentage": round((karma_system.current_vitality / karma_system.max_vitality) * 100, 1),
-            "time_since_last": preview["delta_t"],
-            "is_glitch": preview["is_glitch"],
-            "warning_level": preview["warning_level"]
-        }
+            
+            try:
+                # 尝试获取本卦信息（使用异步执行，避免阻塞）
+                # 使用信号量限制并发数量
+                try:
+                    async with ai_call_semaphore:
+                        original_info_dict = await asyncio.to_thread(
+                            agent.get_hexagram_info,
+                            hexagram_data['original_name'],
+                            hexagram_data['original_nature']
+                        )
+                    if original_info_dict and isinstance(original_info_dict, dict):
+                        original_info = HexagramInfoResponse(**original_info_dict)
+                except Exception as e:
+                    print(f"警告: 获取本卦信息失败: {str(e)}")
+                    # 使用默认值，不阻塞主流程
+                    original_info = None
+                
+                # 尝试获取变卦信息（使用异步执行，避免阻塞）
+                # 使用信号量限制并发数量
+                try:
+                    async with ai_call_semaphore:
+                        changed_info_dict = await asyncio.to_thread(
+                            agent.get_hexagram_info,
+                            hexagram_data['changed_name'],
+                            hexagram_data['changed_nature']
+                        )
+                    if changed_info_dict and isinstance(changed_info_dict, dict):
+                        changed_info = HexagramInfoResponse(**changed_info_dict)
+                except Exception as e:
+                    print(f"警告: 获取变卦信息失败: {str(e)}")
+                    # 使用默认值，不阻塞主流程
+                    changed_info = None
+            except Exception as e:
+                # 如果整体获取失败，不影响主流程
+                print(f"警告: 获取卦象说明信息失败: {str(e)}")
+                original_info = None
+                changed_info = None
+            
+            # --- 阶段三：结算扣费（Commit）---
+            # AI调用完成后，重新更新元气（因为可能在AI调用期间恢复了）
+            karma_system.update_vitality()
+            
+            # 重新计算消耗（因为元气可能已恢复）
+            final_preview = karma_system.calculate_cost_preview()
+            
+            # 使用实际消耗值（取验资时的消耗和当前计算的消耗的较小值，防止因恢复导致消耗增加）
+            actual_cost = min(estimated_cost, final_preview["estimated_cost"])
+            
+            # 确保元气足够支付实际消耗
+            if karma_system.current_vitality < actual_cost:
+                # 如果元气不足，使用当前可用的元气值（但不能超过预计消耗）
+                actual_cost = min(actual_cost, karma_system.current_vitality)
+            
+            # 扣除元气
+            commit_success = karma_system.commit_transaction(actual_cost)
+            
+            if not commit_success:
+                # 理论上不应该发生（因为已经验资过了），但防止并发问题
+                raise HTTPException(
+                    status_code=500,
+                    detail="结算失败，请重试"
+                )
+            
+            # 记录使用（用于计算衰减和恢复）
+            karma_system.record_use()
+            
+            # 构建返回的元气状态信息
+            karma_status = {
+                "success": True,
+                "message": "卦象已成",
+                "cost": actual_cost,  # 使用实际消耗值
+                "current_vitality": karma_system.current_vitality,
+                "max_vitality": karma_system.max_vitality,
+                "percentage": round((karma_system.current_vitality / karma_system.max_vitality) * 100, 1),
+                "time_since_last": preview["delta_t"],
+                "is_glitch": preview["is_glitch"],
+                "warning_level": preview["warning_level"]
+            }
         
         return DivinationResponse(
             hexagram_data=HexagramResponse(**hexagram_data),
@@ -504,7 +536,7 @@ async def interpret_divination(request: DivinationRequest, req: Request):
 
 
 @router.get("/divination/karma-status")
-async def get_karma_status(req: Request):
+async def get_karma_status(req: Request, response: Response):
     """
     获取当前元气状态（不消耗元气）
     """
@@ -516,7 +548,7 @@ async def get_karma_status(req: Request):
 
 
 @router.post("/divination/recharge")
-async def recharge_karma(req: Request):
+async def recharge_karma(req: Request, response: Response):
     """
     充能接口（付费恢复元气）
     模拟付费流程，实际应该对接支付系统
