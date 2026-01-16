@@ -597,3 +597,98 @@ async def recharge_karma(req: Request, response: Response):
         "current_vitality": karma_system.current_vitality,
         "karma_status": karma_system.get_status()
     }
+
+
+@router.get("/divination/rate-limit-status")
+async def get_rate_limit_status(req: Request, response: Response):
+    """
+    检查当前用户的限流状态
+    用于前端实时显示恢复倒计时
+    
+    返回：
+    - 各个接口的限流状态
+    - 恢复时间（如果有被限流）
+    """
+    user_id = get_user_id(req, response)
+    current_time = time.time()
+    
+    # 检查各个接口的限流状态
+    status = {}
+    
+    # 1. 生成单个爻接口（每小时30次）
+    records = request_records[user_id]
+    # 清理过期记录
+    valid_records = [
+        req_time for req_time in records
+        if current_time - req_time < 3600
+    ]
+    current_count = len(valid_records)
+    
+    generate_line_status = {
+        "endpoint": "generate-line",
+        "max_requests": 30,
+        "window_seconds": 3600,
+        "current_requests": current_count,
+        "remaining_requests": max(0, 30 - current_count),
+        "is_limited": current_count >= 30
+    }
+    
+    if current_count >= 30 and valid_records:
+        oldest_request = min(valid_records)
+        retry_after = int(3600 - (current_time - oldest_request)) + 1
+        generate_line_status["retry_after"] = retry_after
+        generate_line_status["retry_after_minutes"] = retry_after // 60
+    else:
+        generate_line_status["retry_after"] = 0
+        generate_line_status["retry_after_minutes"] = 0
+    
+    status["generate_line"] = generate_line_status
+    
+    # 2. 占卜解读接口（每小时10次）- 使用相同的记录
+    interpret_status = {
+        "endpoint": "interpret",
+        "max_requests": 10,
+        "window_seconds": 3600,
+        "current_requests": current_count,
+        "remaining_requests": max(0, 10 - current_count),
+        "is_limited": current_count >= 10
+    }
+    
+    if current_count >= 10 and valid_records:
+        oldest_request = min(valid_records)
+        retry_after = int(3600 - (current_time - oldest_request)) + 1
+        interpret_status["retry_after"] = retry_after
+        interpret_status["retry_after_minutes"] = retry_after // 60
+    else:
+        interpret_status["retry_after"] = 0
+        interpret_status["retry_after_minutes"] = 0
+    
+    status["interpret"] = interpret_status
+    
+    # 3. 充能接口（每小时5次）- 使用单独的记录（如果有的话）
+    # 注意：充能接口可能使用不同的限流记录，这里简化处理
+    recharge_status = {
+        "endpoint": "recharge",
+        "max_requests": 5,
+        "window_seconds": 3600,
+        "current_requests": min(current_count, 5),  # 充能接口限制更严格
+        "remaining_requests": max(0, 5 - min(current_count, 5)),
+        "is_limited": current_count >= 5
+    }
+    
+    if current_count >= 5 and valid_records:
+        oldest_request = min(valid_records)
+        retry_after = int(3600 - (current_time - oldest_request)) + 1
+        recharge_status["retry_after"] = retry_after
+        recharge_status["retry_after_minutes"] = retry_after // 60
+    else:
+        recharge_status["retry_after"] = 0
+        recharge_status["retry_after_minutes"] = 0
+    
+    status["recharge"] = recharge_status
+    
+    return {
+        "user_id": user_id[:8] + "...",  # 只返回部分ID，保护隐私
+        "status": status,
+        "message": "限流状态查询成功。系统使用滑动窗口机制，旧的请求记录会自动过期，无需手动重置。"
+    }
