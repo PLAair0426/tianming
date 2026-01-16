@@ -358,7 +358,7 @@ VITE_API_BASE_URL=http://localhost:8000
    - 点击 **Create repository**
 
 3. **连接并推送代码**
-   ```bash
+```bash
    git remote add origin https://github.com/YOUR_USERNAME/REPO_NAME.git
    git branch -M main
    git push -u origin main
@@ -387,7 +387,7 @@ VITE_API_BASE_URL=http://localhost:8000
      cd backend && pip install -r requirements.txt
      ```
    - **Start Command**: 
-     ```bash
+```bash
      cd backend && uvicorn api_main:app --host 0.0.0.0 --port $PORT
      ```
 
@@ -425,9 +425,9 @@ VITE_API_BASE_URL=http://localhost:8000
    - **Project name**: `celestial-divination`（或自定义）
    - **Framework preset**: `React (Vite)`
    - **Build command**: 
-     ```bash
+```bash
      cd frontend && npm install && npm run build
-     ```
+```
    - **Build output directory**: `frontend/dist`
    - **Root directory**: 留空
 
