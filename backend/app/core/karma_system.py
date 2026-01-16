@@ -186,7 +186,7 @@ class KarmaSystem:
         使用次数越多，恢复越慢；活跃度越低，恢复越快
         """
         # 基础恢复率（每小时恢复）
-        base_recovery_rate = 0.3  # 每小时恢复0.3%
+        base_recovery_rate = 5.0  # 每小时恢复5%（约20小时恢复满）
         
         # 使用次数影响（使用越多，恢复越慢）
         use_factor = math.log(1 + self.total_uses * 0.1) * -0.2
