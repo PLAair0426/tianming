@@ -72,8 +72,10 @@ export const generateSingleLine = async () => {
         if (errorType === '请求过于频繁' || detail.limit_info) {
           // 限流错误
           const limitInfo = detail.limit_info || {};
+          const windowHours = (limitInfo.window_seconds || 3600) / 3600;
+          const retryAfterMinutes = Math.ceil((limitInfo.retry_after || 3600) / 60);
           errorMessage = `请求过于频繁\n\n` +
-            `每分钟最多30次请求，请在 ${limitInfo.retry_after || 60} 秒后重试。\n\n` +
+            `每小时最多${limitInfo.max_requests || 30}次请求，请在 ${retryAfterMinutes} 分钟后重试。\n\n` +
             `当前请求数：${limitInfo.current_requests || 0}/${limitInfo.max_requests || 30}`;
         } else {
           // 其他429错误
@@ -180,8 +182,9 @@ export const getDivination = async (
         if (hasLimitInfo || errorType === '请求过于频繁') {
           // 限流错误
           const limitInfo = detail.limit_info || {};
+          const retryAfterMinutes = Math.ceil((limitInfo.retry_after || 3600) / 60);
           const errorMsg = `请求过于频繁\n\n` +
-            `每分钟最多10次请求，请在 ${limitInfo.retry_after || 60} 秒后重试。\n\n` +
+            `每小时最多${limitInfo.max_requests || 10}次请求，请在 ${retryAfterMinutes} 分钟后重试。\n\n` +
             `当前请求数：${limitInfo.current_requests || 0}/${limitInfo.max_requests || 10}`;
           console.log('✅ 识别为限流错误:', errorMsg);
           throw new Error(errorMsg);
