@@ -273,7 +273,15 @@ export const getDivination = async (
   } catch (error) {
     console.error('占卜服务调用失败:', error);
     
-    // 返回降级响应
+    // 如果是限流错误或元气不足错误，直接重新抛出，让 App.tsx 处理
+    if (error instanceof Error) {
+      const errorMessage = error.message;
+      if (errorMessage.includes('请求过于频繁') || errorMessage.includes('元气不足')) {
+        throw error;  // 重新抛出，让上层处理
+      }
+    }
+    
+    // 其他错误返回降级响应
     return {
       hexagram: 'System_Error',
       hexagramSymbol: ['▅▅  ▅▅', '▅▅  ▅▅', '▅▅  ▅▅', '▅▅  ▅▅', '▅▅  ▅▅', '▅▅  ▅▅'],
