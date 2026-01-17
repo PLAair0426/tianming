@@ -7,6 +7,20 @@ import { DivinationResult } from '../types';
 // API基础URL - 根据环境变量或默认值
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
+// 生成或获取设备唯一ID
+const getDeviceId = () => {
+  let deviceId = localStorage.getItem('device_id');
+  if (!deviceId) {
+    // 生成随机ID (简单的UUID implementation)
+    deviceId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+    localStorage.setItem('device_id', deviceId);
+  }
+  return deviceId;
+};
+
 /**
  * 生成卦象
  */
@@ -15,6 +29,7 @@ export const generateHexagram = async () => {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'X-Device-ID': getDeviceId(),
     },
   });
 
@@ -32,15 +47,16 @@ export const generateHexagram = async () => {
  */
 export const generateSingleLine = async () => {
   console.log('🔍 开始调用 generateSingleLine，API_BASE_URL:', API_BASE_URL);
-  
+
   try {
     const url = `${API_BASE_URL}/api/divination/generate-line`;
     console.log('📡 请求URL:', url);
-    
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Device-ID': getDeviceId(),
       },
       // 添加mode和credentials配置以确保CORS正常工作
       mode: 'cors',
@@ -53,22 +69,22 @@ export const generateSingleLine = async () => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error('❌ 响应错误:', errorText);
-      
+
       let errorData;
       try {
         errorData = JSON.parse(errorText);
       } catch {
         errorData = { detail: `HTTP ${response.status}: ${response.statusText}` };
       }
-      
+
       // 处理详细的错误信息
       let errorMessage = '';
-      
+
       // 如果是429错误（限流），特殊处理
       if (response.status === 429 && errorData.detail) {
         const detail = typeof errorData.detail === 'object' ? errorData.detail : {};
         const errorType = detail.error || '';
-        
+
         if (errorType === '请求过于频繁' || detail.limit_info) {
           // 限流错误
           const limitInfo = detail.limit_info || {};
@@ -92,7 +108,7 @@ export const generateSingleLine = async () => {
       } else {
         errorMessage = `生成爻失败 (HTTP ${response.status})`;
       }
-      
+
       throw new Error(errorMessage);
     }
 
@@ -101,7 +117,7 @@ export const generateSingleLine = async () => {
     return data;
   } catch (error) {
     console.error('❌ generateSingleLine 错误:', error);
-    
+
     // 如果是网络错误，提供更详细的错误信息和解决方案
     if (error instanceof TypeError && (error.message.includes('fetch') || error.message.includes('Failed to fetch'))) {
       const errorMsg = `无法连接到后端服务 (${API_BASE_URL})\n\n` +
@@ -133,6 +149,7 @@ export const getDivination = async (
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Device-ID': getDeviceId(),
       },
       body: JSON.stringify({
         question,
@@ -143,14 +160,14 @@ export const getDivination = async (
     if (!response.ok) {
       const errorText = await response.text();
       console.error('❌ 占卜解读响应错误:', errorText);
-      
+
       let errorData;
       try {
         errorData = JSON.parse(errorText);
       } catch {
         errorData = { detail: `HTTP ${response.status}: ${response.statusText}` };
       }
-      
+
       // 如果是429错误，区分限流和元气不足
       if (response.status === 429 && errorData.detail) {
         // 确保 detail 是对象
@@ -164,10 +181,10 @@ export const getDivination = async (
         } else if (typeof errorData.detail === 'object' && errorData.detail !== null) {
           detail = errorData.detail;
         }
-        
+
         const errorType = detail.error || '';
         const hasLimitInfo = detail.limit_info !== undefined && detail.limit_info !== null;
-        
+
         // 调试日志
         console.log('🔍 429错误详情:', {
           errorData,
@@ -176,7 +193,7 @@ export const getDivination = async (
           hasLimitInfo,
           limitInfo: detail.limit_info
         });
-        
+
         // 判断是限流错误还是元气不足错误
         // 优先检查 limit_info，因为这是限流错误的最明确标识
         if (hasLimitInfo || errorType === '请求过于频繁') {
@@ -198,7 +215,7 @@ export const getDivination = async (
           throw new Error(errorMsg);
         }
       }
-      
+
       // 处理500错误的详细错误信息
       if (response.status === 500 && errorData.detail) {
         let errorMessage = '';
@@ -215,32 +232,32 @@ export const getDivination = async (
         }
         throw new Error(errorMessage);
       }
-      
+
       throw new Error(errorData.detail || '占卜解读失败');
     }
 
     const data = await response.json();
-    
+
     // 将后端响应格式转换为前端需要的格式
     const hexagramData = data.hexagram_data;
-    
+
     // 生成本卦符号数组（从二进制转换为符号）
     // original_binary 是从下往上的数组：[初爻, 二爻, 三爻, 四爻, 五爻, 上爻]
-    const hexagramSymbol = hexagramData.original_binary.map((bit: number) => 
+    const hexagramSymbol = hexagramData.original_binary.map((bit: number) =>
       bit === 1 ? '▅▅▅▅▅' : '▅▅  ▅▅'
     );
-    
+
     // 生成变卦符号数组
     // changed_binary 是从下往上的数组：[初爻, 二爻, 三爻, 四爻, 五爻, 上爻]
-    const changedHexagramSymbol = hexagramData.changed_binary.map((bit: number) => 
+    const changedHexagramSymbol = hexagramData.changed_binary.map((bit: number) =>
       bit === 1 ? '▅▅▅▅▅' : '▅▅  ▅▅'
     );
-    
+
     // 解析AI解读结果
     const interpretation = data.interpretation || '';
     let reasoning = '';
     let content = '';
-    
+
     if (interpretation.includes('【技师在思考】') && interpretation.includes('【正式解读】')) {
       const parts = interpretation.split('【正式解读】');
       reasoning = parts[0].replace('【技师在思考】', '').trim();
@@ -272,7 +289,7 @@ export const getDivination = async (
     };
   } catch (error) {
     console.error('占卜服务调用失败:', error);
-    
+
     // 如果是限流错误或元气不足错误，直接重新抛出，让 App.tsx 处理
     if (error instanceof Error) {
       const errorMessage = error.message;
@@ -280,7 +297,7 @@ export const getDivination = async (
         throw error;  // 重新抛出，让上层处理
       }
     }
-    
+
     // 其他错误返回降级响应
     return {
       hexagram: 'System_Error',
@@ -295,9 +312,31 @@ export const getDivination = async (
       originalInfo: null,
       changedInfo: null,
       reasoning: '【技师日志】Connection timed out. 后端服务连接失败，请检查后端服务是否运行。',
-      content: error instanceof Error 
+      content: error instanceof Error
         ? `系统连接失败：${error.message}。请检查后端API服务是否正常运行（默认地址：http://localhost:8000）。`
         : '系统连接失败，请稍后重试。',
     };
   }
 };
+
+/**
+ * 获取元气状态
+ */
+export const getKarmaStatus = async () => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/divination/karma-status`, {
+      method: 'GET',
+      headers: {
+        'X-Device-ID': getDeviceId(),
+      },
+      credentials: 'omit',
+    });
+    if (response.ok) {
+      return await response.json();
+    }
+  } catch (error) {
+    console.error('获取元气状态失败:', error);
+  }
+  return null;
+};
+
