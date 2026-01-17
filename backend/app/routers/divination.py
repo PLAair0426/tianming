@@ -98,17 +98,21 @@ def get_client_ip(req: Request) -> str:
 def get_user_id(req: Request) -> str:
     """
     获取用户唯一标识
-    优先使用Cookie中的用户ID，如果没有则生成新的（基于IP + User-Agent）
-    用于区分同网络环境下的不同用户，并保持用户ID的持久性
+    优先使用 X-Device-ID 头（前端生成），其次使用Cookie，最后回退到IP + User-Agent
     
     策略：
-    1. 优先使用Cookie中的用户ID（如果存在且有效）
-    2. 如果没有Cookie，使用IP + User-Agent生成新的用户ID
-    3. 将用户ID设置到Cookie中，保持持久性（在响应时完成）
+    1. 优先使用 Request Header 中的 X-Device-ID (由前端生成并存储在 localStorage)
+    2. 其次使用 Cookie 中的 user_id
+    3. 如果都没有，使用 IP + User-Agent 生成 (回退方案)
     """
     import hashlib
     
-    # 尝试从Cookie中获取用户ID
+    # 1. 尝试从 Header 获取 X-Device-ID (最准确，支持跨域)
+    device_id = req.headers.get("X-Device-ID")
+    if device_id and len(device_id) > 10:  # 简单验证长度
+        return device_id
+    
+    # 2. 尝试从Cookie中获取用户ID
     user_id_cookie = req.cookies.get("user_id")
     
     if user_id_cookie:
@@ -116,15 +120,13 @@ def get_user_id(req: Request) -> str:
         if len(user_id_cookie) == 32 and all(c in '0123456789abcdef' for c in user_id_cookie):
             return user_id_cookie
     
-    # 如果没有Cookie或Cookie无效，生成新的用户ID
+    # 3. 如果没有Header也没有Cookie，生成新的用户ID (基于IP)
     client_ip = get_client_ip(req)
     user_agent = req.headers.get("User-Agent", "unknown")
     
     # 组合IP和User-Agent生成唯一标识
     user_id = hashlib.md5(f"{client_ip}:{user_agent}".encode()).hexdigest()
     
-    # 注意：Cookie设置需要在响应中完成，这里只返回用户ID
-    # 实际的Cookie设置会在响应时通过Response对象完成
     return user_id
 
 
@@ -361,11 +363,17 @@ async def interpret_divination(request: DivinationRequest, req: Request, respons
                 # 还没生成就没钱了，直接报错返回，不扣任何东西
                 # 如果消耗超过最大元气值，显示最大元气值作为提示（避免显示不合理的值）
                 required_cost = min(preview["estimated_cost"], karma_system.max_vitality * 1.5)
+                # 如果是过热（操作太快），提示冷却
+                if preview.get("is_glitch", False):
+                    message = "操作过于频繁，元神过热。无需消耗元气，请稍等几秒冷却后再试。"
+                else:
+                    message = "元神枯竭，无法窥探天机。请稍作休息，让元气恢复后再试。"
+                    
                 raise HTTPException(
                     status_code=429,  # Too Many Requests
                     detail={
                         "error": "元气不足",
-                        "message": "元神枯竭，无法窥探天机。请稍作休息，让元气恢复后再试。",
+                        "message": message,
                         "current_vitality": preview["current_vitality"],
                         "required_cost": round(required_cost, 2),
                         "karma_status": karma_system.get_status()

@@ -64,9 +64,9 @@ class KarmaSystem:
         multiplier = 1 + (self.penalty_factor / delta_t)
         estimated_cost = self.base_cost * multiplier
         
-        # 设置消耗上限：最多不超过最大元气值的1.2倍，防止异常高的消耗
-        # 这样可以避免在极端情况下计算出不合理的消耗值
-        max_cost = self.max_vitality * 1.2
+        # 设置消耗上限：最多不超过最大元气值，防止出现无法支付的情况
+        # 这样可以避免在极端情况下计算出不合理的消耗值（如 > 100%）
+        max_cost = self.max_vitality
         estimated_cost = min(estimated_cost, max_cost)
         estimated_cost = round(estimated_cost, 2)
 
