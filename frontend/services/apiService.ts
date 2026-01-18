@@ -207,6 +207,13 @@ export const getDivination = async (
           throw new Error(errorMsg);
         } else {
           // 元气不足错误
+          // 如果是过热错误，只显示消息，不显示数值（以免混淆）
+          if (detail.message && detail.message.includes('元神过热')) {
+            const errorMsg = `元气不足：${detail.message}`;
+            console.log('✅ 识别为过热错误:', errorMsg);
+            throw new Error(errorMsg);
+          }
+
           const errorMsg = `元气不足：${detail.message || '无法完成占卜'}\n\n` +
             `当前元气：${detail.current_vitality || 0}%\n` +
             `需要消耗：${detail.required_cost || 0}%\n\n` +
