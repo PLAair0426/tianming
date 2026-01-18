@@ -3,7 +3,7 @@
 FastAPI 主应用入口
 前后端分离架构 - 后端API服务
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import divination
 import asyncio
@@ -11,9 +11,16 @@ import asyncio
 # 创建FastAPI应用实例
 app = FastAPI(
     title="天国神算 API",
-    description="易经占卜服务后端API",
     version="1.0.0"
 )
+
+# 调试：打印所有请求
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"📡 Request: {request.method} {request.url}")
+    response = await call_next(request)
+    print(f"🔙 Response: {response.status_code}")
+    return response
 
 # 配置CORS - 允许前端跨域访问
 # 前后端分离架构必须配置CORS，否则浏览器会阻止跨域请求
@@ -89,6 +96,7 @@ async def periodic_cleanup():
             print(f"❌ 清理不活跃用户时出错: {e}")
 
 
+
 @app.on_event("startup")
 async def startup_event():
     """
@@ -97,6 +105,16 @@ async def startup_event():
     """
     print("🚀 启动定期清理任务...")
     asyncio.create_task(periodic_cleanup())
+    
+    print("\n🔍 已注册的路由:")
+    for route in app.routes:
+        if hasattr(route, "methods"):
+            methods = ", ".join(route.methods)
+            print(f"  - {methods} {route.path}")
+        else:
+            print(f"  - {route.path}")
+    print("\n")
+    
     print("✅ 定期清理任务已启动（每10分钟清理一次不活跃用户）")
 
 
