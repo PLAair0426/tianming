@@ -484,17 +484,17 @@ export default function App() {
       const apiUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
       // 显示错误提示
-      alert(
-        `生成爻失败：${errorMessage}\n\n` +
-        `请检查：\n` +
-        `1. 后端服务是否已启动（${apiUrl}）\n` +
-        `2. 后端API是否正常运行\n` +
-        `3. 网络连接是否正常\n\n` +
-        `启动后端服务：\n` +
-        `cd backend\n` +
-        `python start_server.py\n\n` +
-        `详细错误信息请查看浏览器控制台（F12）`
-      );
+      // alert(
+      //   `生成爻失败：${errorMessage}\n\n` +
+      //   `请检查：\n` +
+      //   `1. 后端服务是否已启动（${apiUrl}）\n` +
+      //   `2. 后端API是否正常运行\n` +
+      //   `3. 网络连接是否正常\n\n` +
+      //   `启动后端服务：\n` +
+      //   `cd backend\n` +
+      //   `python start_server.py\n\n` +
+      //   `详细错误信息请查看浏览器控制台（F12）`
+      // );
     }
   };
 
@@ -564,7 +564,7 @@ export default function App() {
 
       // 检查是否是元气不足的错误
       if (errorMessage.includes('元气不足')) {
-        alert(errorMessage);
+        // alert(errorMessage);
         // 元气不足时，不显示错误结果，保持在loading状态或返回divination状态
         setStep('divination');
         return;
@@ -573,7 +573,7 @@ export default function App() {
       // 检查是否是限流错误（请求过于频繁）
       if (errorMessage.includes('请求过于频繁')) {
         // 限流错误是正常的业务逻辑，不需要显示系统错误界面
-        alert(errorMessage);
+        // alert(errorMessage);
         setStep('divination');
         return;
       }

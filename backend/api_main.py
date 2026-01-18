@@ -55,6 +55,8 @@ else:
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
+        "https://www.godbar.dpdns.org",
+        "http://www.godbar.dpdns.org",
     ]
     
     # 合并环境变量配置的前端URL和默认地址

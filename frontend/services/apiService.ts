@@ -4,8 +4,8 @@
  */
 import { DivinationResult } from '../types';
 
-// API基础URL - 根据环境变量或默认值
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// API基础URL - 优先使用环境变量，否则使用相对路径（配合Vite Proxy）
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 // 生成或获取设备唯一ID
 const getDeviceId = () => {
