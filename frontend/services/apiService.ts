@@ -11,11 +11,14 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 const getDeviceId = () => {
   let deviceId = localStorage.getItem('device_id');
   if (!deviceId) {
-    // 生成随机ID (简单的UUID implementation)
-    deviceId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-      var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
-      return v.toString(16);
-    });
+    // 优先使用浏览器原生 UUID，避免手写实现细节
+    deviceId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (char) {
+          const random = Math.random() * 16 | 0;
+          const value = char === 'x' ? random : (random & 0x3 | 0x8);
+          return value.toString(16);
+        });
     localStorage.setItem('device_id', deviceId);
   }
   return deviceId;
@@ -39,6 +42,25 @@ export const generateHexagram = async () => {
   }
 
   return await response.json();
+};
+
+export const rechargeKarma = async () => {
+  const response = await fetch(`${API_BASE_URL}/api/divination/recharge`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Device-ID': getDeviceId(),
+    },
+    credentials: 'omit',
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = typeof data.detail === 'object' && data.detail !== null ? data.detail : {};
+    throw new Error(detail.message || data.detail || '充值失败，请稍后重试');
+  }
+
+  return data;
 };
 
 /**
@@ -223,8 +245,8 @@ export const getDivination = async (
         }
       }
 
-      // 处理500错误的详细错误信息
-      if (response.status === 500 && errorData.detail) {
+      // 处理 5xx 错误的详细错误信息
+      if (response.status >= 500 && errorData.detail) {
         let errorMessage = '';
         if (typeof errorData.detail === 'string') {
           errorMessage = errorData.detail;
@@ -292,7 +314,8 @@ export const getDivination = async (
       changedInfo: data.changed_info || null,
       reasoning: reasoning || '【技师日志】系统运行正常，开始分析...',
       content: content || '解读结果生成中...',
-      karma_status: data.karma_status || null,  // 元气状态（完成6个爻后统一结算）
+      karmaStatus: data.karma_status || null,  // 元气状态（完成6个爻后统一结算）
+      technicianId: data.technician_id,
     };
   } catch (error) {
     console.error('占卜服务调用失败:', error);
@@ -318,6 +341,7 @@ export const getDivination = async (
       changedBinary: [],
       originalInfo: null,
       changedInfo: null,
+      karmaStatus: null,
       reasoning: '【技师日志】Connection timed out. 后端服务连接失败，请检查后端服务是否运行。',
       content: error instanceof Error
         ? `系统连接失败：${error.message}。请检查后端API服务是否正常运行（默认地址：http://localhost:8000）。`
@@ -346,4 +370,3 @@ export const getKarmaStatus = async () => {
   }
   return null;
 };
-

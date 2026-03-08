@@ -3,15 +3,43 @@
 FastAPI 主应用入口
 前后端分离架构 - 后端API服务
 """
+from contextlib import asynccontextmanager, suppress
+import asyncio
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import divination
-import asyncio
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 启动定期清理任务...")
+    cleanup_task = asyncio.create_task(periodic_cleanup())
+
+    print("\n🔍 已注册的路由:")
+    for route in app.routes:
+        if hasattr(route, "methods"):
+            methods = ", ".join(route.methods)
+            print(f"  - {methods} {route.path}")
+        else:
+            print(f"  - {route.path}")
+    print("\n")
+
+    print("✅ 定期清理任务已启动（每10分钟清理一次不活跃用户）")
+
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
 
 # 创建FastAPI应用实例
 app = FastAPI(
     title="天国神算 API",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # 调试：打印所有请求
@@ -24,7 +52,6 @@ async def log_requests(request: Request, call_next):
 
 # 配置CORS - 允许前端跨域访问
 # 前后端分离架构必须配置CORS，否则浏览器会阻止跨域请求
-import os
 DEBUG_MODE = os.getenv("DEBUG_MODE", "True").lower() == "true"
 
 # 从环境变量读取前端URL（支持多个，用逗号分隔）
@@ -96,28 +123,6 @@ async def periodic_cleanup():
             divination.cleanup_inactive_users()
         except Exception as e:
             print(f"❌ 清理不活跃用户时出错: {e}")
-
-
-
-@app.on_event("startup")
-async def startup_event():
-    """
-    应用启动时执行
-    启动定期清理任务
-    """
-    print("🚀 启动定期清理任务...")
-    asyncio.create_task(periodic_cleanup())
-    
-    print("\n🔍 已注册的路由:")
-    for route in app.routes:
-        if hasattr(route, "methods"):
-            methods = ", ".join(route.methods)
-            print(f"  - {methods} {route.path}")
-        else:
-            print(f"  - {route.path}")
-    print("\n")
-    
-    print("✅ 定期清理任务已启动（每10分钟清理一次不活跃用户）")
 
 
 @app.get("/")

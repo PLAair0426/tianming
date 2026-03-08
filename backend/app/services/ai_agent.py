@@ -162,7 +162,7 @@ class YiMasterAgent:
             import traceback
             error_detail = f"{str(e)}\n{traceback.format_exc()}"
             print(f"AI咨询错误: {error_detail}")
-            return f"技师连接断开：{str(e)}"
+            raise RuntimeError(f"技师连接断开：{str(e)}") from e
     
     def get_hexagram_info(self, hexagram_name, hexagram_nature):
         """

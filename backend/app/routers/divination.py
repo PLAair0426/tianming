@@ -12,6 +12,7 @@ from app.services.ai_agent import YiMasterAgent
 import random
 import time
 import asyncio
+import re
 
 router = APIRouter()
 
@@ -25,7 +26,11 @@ user_karma_systems = defaultdict(
 
 # 存储每个用户的请求记录（用于API限流）
 # 使用 user_id 而不是 client_ip，以区分同网络环境的不同用户
-request_records = defaultdict(list)
+RATE_LIMIT_CONFIG = {
+    "interpret": {"max_requests": 10, "window_seconds": 3600},
+    "recharge": {"max_requests": 5, "window_seconds": 3600},
+}
+request_records = defaultdict(lambda: {bucket: [] for bucket in RATE_LIMIT_CONFIG})
 
 # 并发控制：限制同时进行的AI调用数量（最多10个）
 ai_call_semaphore = asyncio.Semaphore(10)
@@ -33,6 +38,8 @@ ai_call_semaphore = asyncio.Semaphore(10)
 # 用户级别的锁：防止同一用户的并发请求导致元气重复扣除
 # 使用 threading.Lock 而不是 asyncio.Lock，因为需要在异步上下文中使用
 user_locks = defaultdict(lambda: asyncio.Lock())
+USER_ID_COOKIE_MAX_AGE = 30 * 24 * 3600
+USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{9,127}$")
 
 
 def cleanup_inactive_users():
@@ -57,10 +64,15 @@ def cleanup_inactive_users():
     # 清理 request_records（超过1小时未使用）
     record_threshold = 3600  # 1小时
     inactive_record_user_ids = []
-    for user_id, records in list(request_records.items()):
-        if records:
+    for user_id, record_groups in list(request_records.items()):
+        recent_requests = [
+            req_time
+            for records in record_groups.values()
+            for req_time in records
+        ]
+        if recent_requests:
             # 获取最近的请求时间
-            latest_request = max(records)
+            latest_request = max(recent_requests)
             time_since_latest = current_time - latest_request
             if time_since_latest > record_threshold:
                 inactive_record_user_ids.append(user_id)
@@ -95,7 +107,27 @@ def get_client_ip(req: Request) -> str:
     return req.client.host if req.client else "unknown"
 
 
-def get_user_id(req: Request) -> str:
+def persist_user_id_cookie(response: Optional[Response], user_id: str) -> None:
+    if response is None:
+        return
+
+    response.set_cookie(
+        key="user_id",
+        value=user_id,
+        max_age=USER_ID_COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax"
+    )
+
+
+def is_valid_user_id(user_id: Optional[str]) -> bool:
+    if not user_id:
+        return False
+
+    return USER_ID_PATTERN.fullmatch(user_id) is not None
+
+
+def get_user_id(req: Request, response: Optional[Response] = None) -> str:
     """
     获取用户唯一标识
     优先使用 X-Device-ID 头（前端生成），其次使用Cookie，最后回退到IP + User-Agent
@@ -109,16 +141,16 @@ def get_user_id(req: Request) -> str:
     
     # 1. 尝试从 Header 获取 X-Device-ID (最准确，支持跨域)
     device_id = req.headers.get("X-Device-ID")
-    if device_id and len(device_id) > 10:  # 简单验证长度
+    if is_valid_user_id(device_id):
+        persist_user_id_cookie(response, device_id)
         return device_id
     
     # 2. 尝试从Cookie中获取用户ID
     user_id_cookie = req.cookies.get("user_id")
     
-    if user_id_cookie:
-        # 验证Cookie中的用户ID格式（应该是32位MD5哈希）
-        if len(user_id_cookie) == 32 and all(c in '0123456789abcdef' for c in user_id_cookie):
-            return user_id_cookie
+    if is_valid_user_id(user_id_cookie):
+        persist_user_id_cookie(response, user_id_cookie)
+        return user_id_cookie
     
     # 3. 如果没有Header也没有Cookie，生成新的用户ID (基于IP)
     client_ip = get_client_ip(req)
@@ -126,13 +158,48 @@ def get_user_id(req: Request) -> str:
     
     # 组合IP和User-Agent生成唯一标识
     user_id = hashlib.md5(f"{client_ip}:{user_agent}".encode()).hexdigest()
-    
+
+    persist_user_id_cookie(response, user_id)
     return user_id
 
 
+def get_rate_limit_info(
+    user_id: str,
+    bucket: str,
+    max_requests: int,
+    window_seconds: int
+) -> dict:
+    current_time = time.time()
+    user_records = request_records[user_id]
+
+    user_records[bucket] = [
+        req_time for req_time in user_records[bucket]
+        if current_time - req_time < window_seconds
+    ]
+
+    current_count = len(user_records[bucket])
+    is_limited = current_count >= max_requests
+
+    if is_limited and user_records[bucket]:
+        oldest_request = min(user_records[bucket])
+        retry_after = int(window_seconds - (current_time - oldest_request)) + 1
+    else:
+        retry_after = 0
+
+    return {
+        "max_requests": max_requests,
+        "window_seconds": window_seconds,
+        "current_requests": current_count,
+        "remaining_requests": max(0, max_requests - current_count),
+        "is_limited": is_limited,
+        "retry_after": retry_after
+    }
+
+
 def check_rate_limit(
-    user_id: str, 
-    max_requests: int = 10, 
+    user_id: str,
+    bucket: str,
+    max_requests: int = 10,
     window_seconds: int = 3600  # 默认改为3600秒（1小时）
 ) -> tuple[bool, dict]:
     """
@@ -144,35 +211,16 @@ def check_rate_limit(
     :param window_seconds: 时间窗口（秒），默认3600秒（1小时）
     :return: (是否允许, 限流信息)
     """
-    current_time = time.time()
-    
-    # 清理过期记录（超过时间窗口的请求）
-    request_records[user_id] = [
-        req_time for req_time in request_records[user_id]
-        if current_time - req_time < window_seconds
-    ]
-    
-    # 检查是否超过限制（在记录本次请求之前检查）
-    current_count = len(request_records[user_id])
-    
-    if current_count >= max_requests:
-        # 计算需要等待的时间
-        if request_records[user_id]:
-            oldest_request = min(request_records[user_id])
-            retry_after = int(window_seconds - (current_time - oldest_request)) + 1
-        else:
-            retry_after = window_seconds
-        
-        return False, {
-            "max_requests": max_requests,
-            "window_seconds": window_seconds,
-            "current_requests": current_count,  # 使用清理后的实际请求数
-            "retry_after": retry_after
-        }
-    
-    # 记录本次请求（只有在未超过限制时才记录）
-    request_records[user_id].append(current_time)
-    return True, {}
+    limit_info = get_rate_limit_info(user_id, bucket, max_requests, window_seconds)
+
+    if limit_info["is_limited"]:
+        return False, limit_info
+
+    return True, limit_info
+
+
+def record_rate_limit_request(user_id: str, bucket: str) -> None:
+    request_records[user_id][bucket].append(time.time())
 
 
 class SingleLineResponse(BaseModel):
@@ -232,7 +280,7 @@ async def generate_single_line(req: Request, response: Response):
     """
     try:
         # 获取用户ID并获取该用户的元气系统
-        user_id = get_user_id(req)
+        user_id = get_user_id(req, response)
         
         # 生成单个爻不限制请求次数（因为不消耗元气，且计算量很小）
         karma_system = user_karma_systems[user_id]
@@ -308,21 +356,18 @@ async def interpret_divination(request: DivinationRequest, req: Request, respons
     """
     try:
         # 获取用户ID并获取该用户的元气系统
-        user_id = get_user_id(req)
-        
-        # 设置Cookie，保持用户ID的持久性（30天有效期）
-        response.set_cookie(
-            key="user_id",
-            value=user_id,
-            max_age=30 * 24 * 3600,  # 30天
-            httponly=True,  # 防止XSS攻击
-            samesite="lax"  # CSRF保护
-        )
+        user_id = get_user_id(req, response)
         
         # 使用用户级别的锁，防止并发请求导致元气重复扣除
         async with user_locks[user_id]:
             # 检查API限流（占卜解读接口：每小时最多10次请求）
-            allowed, limit_info = check_rate_limit(user_id, max_requests=10, window_seconds=3600)
+            interpret_limit = RATE_LIMIT_CONFIG["interpret"]
+            allowed, limit_info = check_rate_limit(
+                user_id,
+                "interpret",
+                max_requests=interpret_limit["max_requests"],
+                window_seconds=interpret_limit["window_seconds"]
+            )
             if not allowed:
                 retry_after_minutes = limit_info['retry_after'] // 60
                 raise HTTPException(
@@ -427,12 +472,32 @@ async def interpret_divination(request: DivinationRequest, req: Request, respons
             # 3. 调用AI进行解读（使用异步执行，避免阻塞其他请求）
             # 将同步的AI调用放到线程池中执行，不阻塞事件循环
             # 使用信号量限制并发数量，防止资源耗尽
-            async with ai_call_semaphore:
-                interpretation = await asyncio.to_thread(
-                    agent.consult,
-                    hexagram_data,
-                    request.question,
-                    stream_mode=False
+            try:
+                async with ai_call_semaphore:
+                    interpretation = await asyncio.to_thread(
+                        agent.consult,
+                        hexagram_data,
+                        request.question,
+                        stream_mode=False
+                    )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error": "AI解读失败",
+                        "message": str(e),
+                        "hint": "请稍后重试，或检查 AI 服务配置是否可用。"
+                    }
+                ) from e
+
+            if not interpretation or interpretation.startswith("技师连接断开："):
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error": "AI解读失败",
+                        "message": interpretation or "AI 未返回有效内容",
+                        "hint": "请稍后重试，或检查 AI 服务配置是否可用。"
+                    }
                 )
             
             # 4. 生成随机技师ID
@@ -509,6 +574,7 @@ async def interpret_divination(request: DivinationRequest, req: Request, respons
             
             # 记录使用（用于计算衰减和恢复）
             karma_system.record_use()
+            record_rate_limit_request(user_id, "interpret")
             
             # 构建返回的元气状态信息
             karma_status = {
@@ -518,6 +584,8 @@ async def interpret_divination(request: DivinationRequest, req: Request, respons
                 "current_vitality": karma_system.current_vitality,
                 "max_vitality": karma_system.max_vitality,
                 "percentage": round((karma_system.current_vitality / karma_system.max_vitality) * 100, 1),
+                "total_uses": karma_system.total_uses,
+                "can_use": karma_system.current_vitality > 0,
                 "time_since_last": preview["delta_t"],
                 "is_glitch": preview["is_glitch"],
                 "warning_level": preview["warning_level"]
@@ -555,7 +623,7 @@ async def get_karma_status(req: Request, response: Response):
     获取当前元气状态（不消耗元气）
     """
     # 获取用户ID并获取该用户的元气系统
-    user_id = get_user_id(req)
+    user_id = get_user_id(req, response)
     karma_system = user_karma_systems[user_id]
     
     return karma_system.get_status()
@@ -568,33 +636,41 @@ async def recharge_karma(req: Request, response: Response):
     模拟付费流程，实际应该对接支付系统
     """
     # 获取用户ID并获取该用户的元气系统
-    user_id = get_user_id(req)
-    
-    # 检查API限流（充能接口：每小时最多5次请求，防止滥用）
-    allowed, limit_info = check_rate_limit(user_id, max_requests=5, window_seconds=3600)
-    if not allowed:
-        retry_after_minutes = limit_info['retry_after'] // 60
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "请求过于频繁",
-                "message": f"请稍后再试，每小时最多5次充能。请在 {retry_after_minutes} 分钟后重试。",
-                "limit_info": limit_info
-            }
+    user_id = get_user_id(req, response)
+
+    async with user_locks[user_id]:
+        recharge_limit = RATE_LIMIT_CONFIG["recharge"]
+        allowed, limit_info = check_rate_limit(
+            user_id,
+            "recharge",
+            max_requests=recharge_limit["max_requests"],
+            window_seconds=recharge_limit["window_seconds"]
         )
-    
-    karma_system = user_karma_systems[user_id]
-    
-    # 模拟付费成功，恢复元气到满值
-    karma_system.current_vitality = karma_system.max_vitality
-    karma_system.last_recovery_time = time.time()
-    
-    return {
-        "success": True,
-        "message": "元气已恢复",
-        "current_vitality": karma_system.current_vitality,
-        "karma_status": karma_system.get_status()
-    }
+        if not allowed:
+            retry_after_minutes = limit_info['retry_after'] // 60
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "请求过于频繁",
+                    "message": f"请稍后再试，每小时最多5次充能。请在 {retry_after_minutes} 分钟后重试。",
+                    "limit_info": limit_info
+                }
+            )
+
+        karma_system = user_karma_systems[user_id]
+        karma_system.last_active_time = time.time()
+
+        # 模拟付费成功，恢复元气到满值
+        karma_system.current_vitality = karma_system.max_vitality
+        karma_system.last_recovery_time = time.time()
+        record_rate_limit_request(user_id, "recharge")
+
+        return {
+            "success": True,
+            "message": "元气已恢复",
+            "current_vitality": karma_system.current_vitality,
+            "karma_status": karma_system.get_status()
+        }
 
 
 @router.get("/divination/rate-limit-status")
@@ -628,55 +704,31 @@ async def get_rate_limit_status(req: Request, response: Response):
     
     status["generate_line"] = generate_line_status
     
-    # 获取其他接口的限流记录
-    records = request_records[user_id]
-    # 清理过期记录
-    valid_records = [
-        req_time for req_time in records
-        if current_time - req_time < 3600
-    ]
-    current_count = len(valid_records)
-    
-    # 2. 占卜解读接口（每小时10次）- 使用相同的记录
+    interpret_limit = RATE_LIMIT_CONFIG["interpret"]
     interpret_status = {
         "endpoint": "interpret",
-        "max_requests": 10,
-        "window_seconds": 3600,
-        "current_requests": current_count,
-        "remaining_requests": max(0, 10 - current_count),
-        "is_limited": current_count >= 10
+        **get_rate_limit_info(
+            user_id,
+            "interpret",
+            max_requests=interpret_limit["max_requests"],
+            window_seconds=interpret_limit["window_seconds"]
+        )
     }
-    
-    if current_count >= 10 and valid_records:
-        oldest_request = min(valid_records)
-        retry_after = int(3600 - (current_time - oldest_request)) + 1
-        interpret_status["retry_after"] = retry_after
-        interpret_status["retry_after_minutes"] = retry_after // 60
-    else:
-        interpret_status["retry_after"] = 0
-        interpret_status["retry_after_minutes"] = 0
+    interpret_status["retry_after_minutes"] = interpret_status["retry_after"] // 60
     
     status["interpret"] = interpret_status
     
-    # 3. 充能接口（每小时5次）- 使用单独的记录（如果有的话）
-    # 注意：充能接口可能使用不同的限流记录，这里简化处理
+    recharge_limit = RATE_LIMIT_CONFIG["recharge"]
     recharge_status = {
         "endpoint": "recharge",
-        "max_requests": 5,
-        "window_seconds": 3600,
-        "current_requests": min(current_count, 5),  # 充能接口限制更严格
-        "remaining_requests": max(0, 5 - min(current_count, 5)),
-        "is_limited": current_count >= 5
+        **get_rate_limit_info(
+            user_id,
+            "recharge",
+            max_requests=recharge_limit["max_requests"],
+            window_seconds=recharge_limit["window_seconds"]
+        )
     }
-    
-    if current_count >= 5 and valid_records:
-        oldest_request = min(valid_records)
-        retry_after = int(3600 - (current_time - oldest_request)) + 1
-        recharge_status["retry_after"] = retry_after
-        recharge_status["retry_after_minutes"] = retry_after // 60
-    else:
-        recharge_status["retry_after"] = 0
-        recharge_status["retry_after_minutes"] = 0
+    recharge_status["retry_after_minutes"] = recharge_status["retry_after"] // 60
     
     status["recharge"] = recharge_status
     

@@ -27,6 +27,8 @@ def test_validation():
     # 验证数据
     print("\n2. 验证数据...")
     validation_result = validate_hexagram_data(hexagram_data)
+    assert validation_result["valid"] is True
+    assert validation_result["errors"] == []
     
     # 输出验证结果
     print("\n验证结果:")
@@ -43,6 +45,10 @@ def test_validation():
     
     print("\n测试错误的卦名...")
     wrong_validation = validate_hexagram_data(wrong_data)
+    assert wrong_validation["valid"] is False
+    assert any("卦名不匹配" in error for error in wrong_validation["errors"])
+    assert wrong_validation.get("fixed")
+    assert wrong_validation["fixed"]["original_name"] == hexagram_data["original_name"]
     log_validation_result(wrong_validation)
     
     if wrong_validation.get("fixed"):

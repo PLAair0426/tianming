@@ -4,6 +4,14 @@ export interface HexagramInfo {
   quote: string;
 }
 
+export interface KarmaStatus {
+  current_vitality: number;
+  max_vitality: number;
+  percentage: number;
+  total_uses: number;
+  can_use: boolean;
+}
+
 export interface DivinationResult {
   hexagram: string;  // 本卦名称
   hexagramSymbol: string[];  // 本卦符号
@@ -16,6 +24,8 @@ export interface DivinationResult {
   changedBinary: number[];  // 变卦二进制数组 [0,1]
   originalInfo: HexagramInfo | null;  // 本卦说明（AI生成）
   changedInfo: HexagramInfo | null;  // 变卦说明（AI生成）
+  karmaStatus?: KarmaStatus | null;
+  technicianId?: number;
   reasoning: string;
   content: string;
 }

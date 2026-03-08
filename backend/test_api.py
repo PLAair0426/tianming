@@ -1,66 +1,136 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-测试后端API端点
-"""
-import requests
-import json
+from fastapi.testclient import TestClient
 
-BASE_URL = "http://localhost:8000"
+import api_main
+from app.routers import divination
 
-def test_endpoint(method, path, data=None):
-    """测试API端点"""
-    url = f"{BASE_URL}{path}"
-    try:
-        if method == "GET":
-            response = requests.get(url, timeout=5)
-        elif method == "POST":
-            response = requests.post(url, json=data, timeout=5)
-        else:
-            return False, f"不支持的方法: {method}"
-        
-        return response.status_code == 200, {
-            "status": response.status_code,
-            "data": response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text
+
+class SuccessfulAgent:
+    def consult(self, hexagram_data, user_input, stream_mode=False):
+        return "【技师在思考】一切正常\n\n【正式解读】测试解读成功"
+
+    def get_hexagram_info(self, hexagram_name, hexagram_nature):
+        return {
+            "composition": hexagram_nature.replace("\n", "上"),
+            "meaning": f"{hexagram_name} 测试说明",
+            "quote": "测试卦辞",
         }
-    except requests.exceptions.ConnectionError:
-        return False, "无法连接到后端服务，请确保后端服务已启动"
-    except Exception as e:
-        return False, str(e)
 
-if __name__ == "__main__":
-    print("=" * 60)
-    print("测试后端API端点")
-    print("=" * 60)
-    
-    # 1. 测试健康检查
-    print("\n1. 测试健康检查端点...")
-    success, result = test_endpoint("GET", "/health")
-    if success:
-        print(f"   ✓ /health: {result}")
-    else:
-        print(f"   ✗ /health: {result}")
-    
-    # 2. 测试生成单个爻
-    print("\n2. 测试生成单个爻端点...")
-    success, result = test_endpoint("POST", "/api/divination/generate-line")
-    if success:
-        print(f"   ✓ /api/divination/generate-line: {result}")
-    else:
-        print(f"   ✗ /api/divination/generate-line: {result}")
-        if isinstance(result, str) and "无法连接" in result:
-            print("\n   请启动后端服务：")
-            print("   cd backend")
-            print("   python start_server.py")
-    
-    # 3. 测试根路径
-    print("\n3. 测试根路径...")
-    success, result = test_endpoint("GET", "/")
-    if success:
-        print(f"   ✓ /: {result}")
-    else:
-        print(f"   ✗ /: {result}")
-    
-    print("\n" + "=" * 60)
-    print("测试完成")
-    print("=" * 60)
+
+class FailingAgent:
+    def consult(self, hexagram_data, user_input, stream_mode=False):
+        raise RuntimeError("上游 AI 超时")
+
+    def get_hexagram_info(self, hexagram_name, hexagram_nature):
+        return None
+
+
+def test_root_endpoint():
+    with TestClient(api_main.app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "healthy"
+
+
+def test_generate_line_endpoint():
+    with TestClient(api_main.app) as client:
+        response = client.post("/api/divination/generate-line")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["value"] in {6, 7, 8, 9}
+    assert data["binary"] in {0, 1}
+    assert data["name"] in {"老阴", "少阳", "少阴", "老阳"}
+    assert "karma_status" in data
+
+
+def test_rate_limit_status_endpoint():
+    with TestClient(api_main.app) as client:
+        response = client.get("/api/divination/rate-limit-status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "user_id" in data
+    assert "status" in data
+    assert "interpret" in data["status"]
+    assert "recharge" in data["status"]
+    assert response.cookies.get("user_id")
+
+
+def test_rate_limit_status_reuses_cookie_based_user_id():
+    device_id = "123e4567-e89b-12d3-a456-426614174000"
+
+    with TestClient(api_main.app) as client:
+        first_response = client.get(
+            "/api/divination/rate-limit-status",
+            headers={"X-Device-ID": device_id},
+        )
+
+        assert first_response.status_code == 200
+        assert first_response.cookies.get("user_id") == device_id
+        assert first_response.json()["user_id"] == f"{device_id[:8]}..."
+
+        cookie_response = client.get("/api/divination/rate-limit-status")
+
+        assert cookie_response.status_code == 200
+        assert cookie_response.json()["user_id"] == f"{device_id[:8]}..."
+
+
+def test_interpret_failure_does_not_consume_vitality_or_rate_limit(monkeypatch):
+    device_id = "123e4567-e89b-12d3-a456-426614174101"
+    payload = {"question": "测试问题", "hex_lines": [7, 7, 7, 7, 7, 7]}
+
+    monkeypatch.setattr(divination, "YiMasterAgent", FailingAgent)
+
+    with TestClient(api_main.app) as client:
+        before_status = client.get(
+            "/api/divination/karma-status",
+            headers={"X-Device-ID": device_id},
+        ).json()
+
+        response = client.post(
+            "/api/divination/interpret",
+            json=payload,
+            headers={"X-Device-ID": device_id},
+        )
+
+        after_status = client.get(
+            "/api/divination/karma-status",
+            headers={"X-Device-ID": device_id},
+        ).json()
+
+        rate_limit_status = client.get(
+            "/api/divination/rate-limit-status",
+            headers={"X-Device-ID": device_id},
+        ).json()
+
+    assert response.status_code == 502
+    assert before_status["current_vitality"] == after_status["current_vitality"] == 100.0
+    assert rate_limit_status["status"]["interpret"]["current_requests"] == 0
+
+
+def test_interpret_and_recharge_use_separate_rate_limit_buckets(monkeypatch):
+    device_id = "123e4567-e89b-12d3-a456-426614174202"
+    payload = {"question": "测试问题", "hex_lines": [7, 7, 7, 7, 7, 7]}
+
+    monkeypatch.setattr(divination, "YiMasterAgent", SuccessfulAgent)
+
+    with TestClient(api_main.app) as client:
+        interpret_response = client.post(
+            "/api/divination/interpret",
+            json=payload,
+            headers={"X-Device-ID": device_id},
+        )
+        recharge_response = client.post(
+            "/api/divination/recharge",
+            headers={"X-Device-ID": device_id},
+        )
+        status = client.get(
+            "/api/divination/rate-limit-status",
+            headers={"X-Device-ID": device_id},
+        ).json()
+
+    assert interpret_response.status_code == 200
+    assert recharge_response.status_code == 200
+    assert status["status"]["interpret"]["current_requests"] == 1
+    assert status["status"]["recharge"]["current_requests"] == 1

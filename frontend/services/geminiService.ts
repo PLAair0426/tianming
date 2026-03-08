@@ -21,18 +21,30 @@ Tone Examples:
 - "Detected a high concentration of bad luck packets..."
 `;
 
+const EMPTY_HEXAGRAM_SYMBOL = ["▅▅  ▅▅", "▅▅  ▅▅", "▅▅  ▅▅", "▅▅  ▅▅", "▅▅  ▅▅", "▅▅  ▅▅"];
+
 const MOCK_FALLBACK: DivinationResult = {
   hexagram: "System_Error",
-  hexagramSymbol: ["▅▅  ▅▅", "▅▅  ▅▅", "▅▅  ▅▅", "▅▅  ▅▅", "▅▅  ▅▅", "▅▅  ▅▅"],
+  hexagramSymbol: EMPTY_HEXAGRAM_SYMBOL,
+  changedHexagram: "System_Error",
+  changedHexagramSymbol: EMPTY_HEXAGRAM_SYMBOL,
+  originalNature: "未知",
+  changedNature: "未知",
+  originalHexagram: [],
+  changedHexagramValues: [],
+  changedBinary: [],
+  originalInfo: null,
+  changedInfo: null,
+  karmaStatus: null,
   reasoning: "【技师日志】Connection timed out. The celestial server is under maintenance or your API KEY is invalid. Using cached response.",
   content: "系统连接失败。看来是天庭防火墙拦截了你的请求。请检查您的网络连接或 API Key 配置。除此之外，卦象显示您今天不宜强求，建议稍后再试。"
 };
 
 export const getDivination = async (question: string): Promise<DivinationResult> => {
   try {
-    const apiKey = process.env.API_KEY;
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
     if (!apiKey) {
-      console.warn("No API Key found, using mock data.");
+      console.warn("No Gemini API key found, using mock data.");
       return MOCK_FALLBACK;
     }
 
@@ -60,7 +72,15 @@ export const getDivination = async (question: string): Promise<DivinationResult>
     const text = response.text;
     if (!text) throw new Error("Empty response from Gemini");
     
-    return JSON.parse(text) as DivinationResult;
+    const parsed = JSON.parse(text) as Partial<DivinationResult>;
+
+    return {
+      ...MOCK_FALLBACK,
+      ...parsed,
+      hexagramSymbol: parsed.hexagramSymbol ?? MOCK_FALLBACK.hexagramSymbol,
+      changedHexagram: parsed.changedHexagram ?? parsed.hexagram ?? MOCK_FALLBACK.changedHexagram,
+      changedHexagramSymbol: parsed.changedHexagramSymbol ?? parsed.hexagramSymbol ?? MOCK_FALLBACK.changedHexagramSymbol,
+    };
 
   } catch (error) {
     console.error("Divination failed:", error);

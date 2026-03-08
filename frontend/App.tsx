@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { getDivination, generateSingleLine, getKarmaStatus } from './services/apiService';
+import { getDivination, generateSingleLine, getKarmaStatus, rechargeKarma } from './services/apiService';
 
 // --- SVG 图标组件 (霓虹道士版) ---
 const IconWrapper = ({ children, className = '', style = {} }) => (
@@ -381,6 +381,17 @@ export default function App() {
   const [isPaymentThank, setIsPaymentThank] = useState(false);  // 是否是付费后的感谢提示框
   const [vitality, setVitality] = useState({ current: 100, max: 100, percentage: 100, can_use: true });  // 元气状态
 
+  const applyVitalityStatus = (status) => {
+    if (!status) return;
+
+    setVitality({
+      current: status.current_vitality ?? 100,
+      max: status.max_vitality ?? 100,
+      percentage: status.percentage ?? 100,
+      can_use: status.can_use !== false
+    });
+  };
+
   useEffect(() => {
     setCurrentTechStatus(TECH_STATUS[Math.floor(Math.random() * TECH_STATUS.length)]);
   }, []);
@@ -390,12 +401,7 @@ export default function App() {
     const updateVitality = async () => {
       const data = await getKarmaStatus();
       if (data) {
-        setVitality({
-          current: data.current_vitality || 100,
-          max: data.max_vitality || 100,
-          percentage: data.percentage || 100,
-          can_use: data.can_use !== false
-        });
+        applyVitalityStatus(data);
       }
     };
 
@@ -545,9 +551,17 @@ export default function App() {
         changedNature: result.changedNature,
         originalInfo: result.originalInfo,
         changedInfo: result.changedInfo,
+        technicianId: result.technicianId,
         reasoning: result.reasoning,
         content: result.content
       });
+
+      if (result.karmaStatus) {
+        applyVitalityStatus(result.karmaStatus);
+      }
+      if (result.technicianId) {
+        setTechnicianId(result.technicianId);
+      }
 
       setStep('result');
       setStage('reasoning');
@@ -564,17 +578,20 @@ export default function App() {
 
       // 检查是否是元气不足的错误
       if (errorMessage.includes('元气不足')) {
-        // alert(errorMessage);
-        // 元气不足时，不显示错误结果，保持在loading状态或返回divination状态
         setStep('divination');
+        if (errorMessage.includes('元神过热')) {
+          alert(errorMessage);
+        } else {
+          alert(errorMessage);
+          setShowPaymentModal(true);
+        }
         return;
       }
 
       // 检查是否是限流错误（请求过于频繁）
       if (errorMessage.includes('请求过于频繁')) {
-        // 限流错误是正常的业务逻辑，不需要显示系统错误界面
-        // alert(errorMessage);
         setStep('divination');
+        alert(errorMessage);
         return;
       }
 
@@ -1251,32 +1268,18 @@ export default function App() {
               <button
                 onClick={async () => {
                   try {
-                    const apiUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-                    const response = await fetch(`${apiUrl}/api/divination/recharge`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      credentials: 'omit',
-                    });
+                    const data = await rechargeKarma();
 
-                    if (response.ok) {
-                      // 更新元气状态
-                      const data = await response.json();
-                      setVitality({
-                        current: data.current_vitality || 100,
-                        max: data.max_vitality || 100,
-                        percentage: data.karma_status?.percentage || 100,
-                        can_use: true
-                      });
+                    if (data) {
+                      applyVitalityStatus(data.karma_status || data);
                       // 关闭付费Modal，显示感谢提示框（标记为付费后的感谢）
                       setIsPaymentThank(true);
                       setShowPaymentModal(false);
                       setShowCoffeeModal(true);
-                    } else {
-                      alert('支付失败，请重试');
                     }
                   } catch (error) {
                     console.error('支付失败:', error);
-                    alert('支付失败，请检查网络连接');
+                    alert(error instanceof Error ? error.message : '支付失败，请检查网络连接');
                   }
                 }}
                 className="px-8 py-3 border rounded transition-all font-tech uppercase tracking-wider hover:opacity-80 mb-2"
