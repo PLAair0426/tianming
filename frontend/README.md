@@ -1,20 +1,38 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# 前端说明
 
-# Run and deploy your AI Studio app
+本目录是 `Vite + React + TypeScript` 前端，用于连接后端占卜 API。
 
-This contains everything you need to run your app locally.
+## 当前结构
 
-View your app in AI Studio: https://ai.studio/apps/drive/1YNxKQUY9ep-jD01KW3df1Hqgnss8A4Ic
+- `App.tsx`：主界面与交互状态
+- `components/`：卦象展示、加载动画、背景和通用图标
+- `services/apiService.ts`：统一的后端 API 调用封装
+- `types.ts`：前端共享类型定义
 
-## Run Locally
+## 启动
 
-**Prerequisites:**  Node.js
+```bash
+npm install
+npm run dev
+```
 
+## 本地配置
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+在 `.env.local` 或 `.env` 中配置后端地址：
+
+```env
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+## 可用脚本
+
+- `npm run dev`：本地开发
+- `npm run build`：生产构建
+- `npm run preview`：预览构建结果
+- `npm run typecheck`：TypeScript 类型检查
+
+## 说明
+
+- 当前前端默认通过 `frontend/services/apiService.ts` 调用后端
+- 如未配置 `VITE_API_BASE_URL`，会优先尝试相对路径
+- 已移除未使用的 Gemini/AI Studio 模板残留文件，当前前端只依赖后端 API

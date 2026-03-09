@@ -22,11 +22,11 @@ def remove_markdown(text):
     text = re.sub(r'__([^_]+)__', r'\1', text)       # __粗体__
     text = re.sub(r'_([^_]+)_', r'\1', text)        # _斜体_
     
-    # 移除链接 [text](url)
-    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-    
     # 移除图片 ![alt](url)
     text = re.sub(r'!\[([^\]]*)\]\([^\)]+\)', '', text)
+    
+    # 移除链接 [text](url)
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
     
     # 移除列表符号
     text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
@@ -47,11 +47,11 @@ class YiMasterAgent:
     def __init__(self):
         # 从配置中读取 Key，不要硬编码
         if not settings.API_KEY:
-            raise ValueError("未找到 DEEPSEEK_API_KEY，请检查 .env 文件")
+            raise ValueError("未找到可用的 API Key，请检查 DEEPSEEK_API_KEY / OPENAI_API_KEY / API_KEY")
             
         self.client = OpenAI(
             api_key=settings.API_KEY, 
-            base_url="https://api.deepseek.com"
+            base_url=settings.API_BASE_URL
         )
 
     def consult(self, hexagram_data, user_input, stream_mode=True):
@@ -120,7 +120,7 @@ class YiMasterAgent:
         try:
             # 简化调用逻辑
             response = self.client.chat.completions.create(
-                model="deepseek-reasoner",
+                model=settings.AI_MODEL,
                 messages=[
                     {"role": "system", "content": agent_prompt}, 
                     {"role": "user", "content": user_prompt}
@@ -202,7 +202,7 @@ class YiMasterAgent:
             timeout = 30
             
             response = self.client.chat.completions.create(
-                model="deepseek-reasoner",
+                model=settings.AI_MODEL,
                 messages=[
                     {"role": "system", "content": "你是一位《易经》专家，擅长用简洁准确的语言解释卦象。请严格按照JSON格式返回数据。"},
                     {"role": "user", "content": prompt}

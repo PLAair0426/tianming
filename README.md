@@ -1,15 +1,15 @@
 # 天国神算
 
 基于 `FastAPI + React + TypeScript` 的前后端分离占卜系统。  
-后端负责卦象生成、AI 解读、元气系统与限流控制；前端负责交互式起卦、结果展示与状态提示。
+后端负责起卦、卦象校验、AI 解读、元气系统与限流；前端负责交互式起卦、结果展示与状态提示。
 
 ## 功能概览
 
-- 六爻卦象生成：后端统一生成本卦、变卦和爻值，避免前后端结果不一致
-- AI 解读：基于 `DeepSeek` 接口生成占卜说明
-- 元气系统：按用户维度维护使用状态，防止频繁滥用
+- 六爻卦象生成：后端统一生成本卦、变卦、爻值，避免前后端结果不一致
+- AI 解读：通过 OpenAI 兼容接口生成卦象说明
+- 元气系统：按用户维度限制高频调用，防止滥用
 - 限流保护：对高成本接口做滑动窗口限流
-- 前后端分离：前端可独立部署，后端提供标准 API
+- 前后端分离：前端可独立部署，后端对外提供标准 API
 
 ## 技术栈
 
@@ -18,8 +18,8 @@
 - `FastAPI`
 - `Uvicorn`
 - `Pydantic`
-- `httpx`
 - `python-dotenv`
+- `openai`
 
 ### 前端
 
@@ -35,6 +35,7 @@
 │  ├─ api_main.py
 │  ├─ start_server.py
 │  ├─ requirements.txt
+│  ├─ test_api.py
 │  └─ app/
 │     ├─ core/
 │     ├─ routers/
@@ -88,30 +89,36 @@ npm run dev
 ### 后端 `backend/.env`
 
 ```env
-DEEPSEEK_API_KEY=your_deepseek_api_key
+# 三选一即可，优先级依次为 DEEPSEEK_API_KEY -> OPENAI_API_KEY -> API_KEY
+DEEPSEEK_API_KEY=your_api_key
+
+# 可选：如果接入其他 OpenAI 兼容服务，请改成对应地址
+API_BASE_URL=https://api.deepseek.com
+
+# 可选：如果更换供应商，通常也要同步调整模型名
+AI_MODEL=deepseek-reasoner
+
 DEBUG_MODE=True
 FRONTEND_URL=http://localhost:5173
 ```
 
 说明：
 
-- `DEEPSEEK_API_KEY`：AI 解读所需
+- `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `API_KEY`：任意设置一个即可
+- `API_BASE_URL`：OpenAI 兼容服务地址，默认是 DeepSeek
+- `AI_MODEL`：调用的模型名称，默认是 `deepseek-reasoner`
 - `DEBUG_MODE`：开发模式下会放宽跨域限制
-- `FRONTEND_URL`：生产环境建议显式配置允许访问的前端地址
+- `FRONTEND_URL`：生产环境建议显式配置允许访问的前端地址，可用逗号分隔多个来源
 
-### 前端
-
-前端可通过 `.env` 或 `.env.local` 配置后端地址：
+### 前端 `.env` / `.env.local`
 
 ```env
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
-未配置时，代码会优先使用相对路径或本地默认地址。
+未配置时，前端会优先使用相对路径或本地默认地址。
 
 ## API 概览
-
-当前核心接口：
 
 - `POST /api/divination/generate-line`：生成单个爻
 - `POST /api/divination/generate`：生成完整卦象
@@ -119,17 +126,8 @@ VITE_API_BASE_URL=http://localhost:8000
 - `GET /api/divination/karma-status`：查询元气状态
 - `POST /api/divination/recharge`：恢复元气
 - `GET /api/divination/rate-limit-status`：查询限流状态
+- `GET /`：服务存活检查
 - `GET /health`：健康检查
-
-## 用户隔离与限流
-
-后端按用户维度维护状态：
-
-- 优先使用前端传入的 `X-Device-ID`
-- 其次使用 `user_id` Cookie
-- 否则回退为 `IP + User-Agent` 生成的稳定标识
-
-高成本接口使用滑动窗口限流，避免单个用户持续占满资源。
 
 ## 开发与验证
 
@@ -154,11 +152,43 @@ cd frontend
 npm run build
 ```
 
+### 乱码排查
+
+项目源码统一使用 UTF-8。若 PowerShell 中看到中文显示异常，优先检查终端编码，而不是直接认定文件损坏：
+
+```powershell
+chcp 65001
+```
+
+也可以使用仓库内的编码扫描方式：
+
+```bash
+python C:/Users/64426/.codex/skills/encoding-garbled-check/scripts/scan_encoding.py --path .
+```
+
+## GitHub 发布
+
+当前仓库远程地址：
+
+- `https://github.com/PLAair0426/tianming.git`
+
+建议发布流程：
+
+```bash
+git fetch origin --prune
+git pull --rebase origin main
+git add .
+git commit -m "docs: update readme and backend config"
+git push origin main
+```
+
+如果本地有未提交改动，先提交或暂存后再执行 `git pull --rebase`。
+
 ## 常见问题
 
-### 1. 前端提示无法连接后端
+### 1. 前端无法连接后端
 
-检查：
+请检查：
 
 - 后端是否已经启动
 - `VITE_API_BASE_URL` 是否正确
@@ -166,28 +196,22 @@ npm run build
 
 ### 2. AI 解读失败
 
-检查：
+请检查：
 
-- `backend/.env` 中是否配置了 `DEEPSEEK_API_KEY`
-- 后端日志中是否出现上游接口错误
+- 是否配置了 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY` 或 `API_KEY`
+- 如果不是 DeepSeek，`API_BASE_URL` 和 `AI_MODEL` 是否匹配
+- 后端日志中是否有上游接口报错
 
 ### 3. 跨域访问失败
 
-检查：
+请检查：
 
 - 开发环境是否启用了 `DEBUG_MODE=True`
 - 生产环境是否正确设置了 `FRONTEND_URL`
 
 ## 部署说明
 
-- 前端目录包含 `render`/静态站点部署所需文件，可单独托管
-- 后端目录包含 `render`、`fly.io` 等部署配置示例
-- 生产环境请务必配置真实的前端来源和 API Key
-
-## 当前状态
-
-截至 `2026-03-08`，项目已验证：
-
-- 后端基础接口可启动并响应
-- 前端可通过 `Vite` 成功构建
-- 根文档已恢复为 UTF-8 正常内容
+- `frontend/` 目录可单独部署为静态站点
+- `backend/` 目录可独立部署到支持 Python 的平台
+- 仓库中已包含部分部署相关文件，如 `render.yaml`、`railway.json`、`fly.toml`
+- 生产环境请务必配置真实可用的前端来源与 API 密钥
