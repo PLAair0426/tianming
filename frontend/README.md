@@ -35,4 +35,4 @@ VITE_API_BASE_URL=http://localhost:8000
 
 - 当前前端默认通过 `frontend/services/apiService.ts` 调用后端
 - 如未配置 `VITE_API_BASE_URL`，会优先尝试相对路径
-- 已移除未使用的 Gemini/AI Studio 模板残留文件，当前前端只依赖后端 API
+- 已移除未使用的旧模板残留文件，当前前端只依赖后端 API

@@ -160,12 +160,23 @@ npm run build
 chcp 65001
 ```
 
-也可以使用仓库内的编码扫描方式：
+也可以使用本地的编码扫描工具或脚本，对仓库做 UTF-8 一致性检查：
 
 ```bash
-python C:/Users/64426/.codex/skills/encoding-garbled-check/scripts/scan_encoding.py --path .
+python <your-encoding-check-script> --path .
 ```
 
+## 发布流程
+
+建议发布流程：
+
+```bash
+git fetch origin --prune
+git pull --rebase origin main
+git add .
+git commit -m "docs: update readme and backend config"
+git push origin main
+```
 
 如果本地有未提交改动，先提交或暂存后再执行 `git pull --rebase`。
 
